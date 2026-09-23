@@ -1,0 +1,21 @@
+{
+  "domain": "entity_availability",
+  "name": "Health Monitor (Entity Availability fork)",
+  "after_dependencies": [
+    "http",
+    "lovelace"
+  ],
+  "codeowners": [
+    "@italo-lombardi",
+    "@db-wally007"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/db-wally007/ha-health-monitor",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/db-wally007/ha-health-monitor/issues",
+  "quality_scale": "custom",
+  "requirements": [],
+  "version": "0.5.3+hm.1"
+}

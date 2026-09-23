@@ -1,0 +1,883 @@
+# Health Monitor for Home Assistant
+
+> ### This is a fork. All the credit belongs to [Italo Lombardi](https://github.com/italo-lombardi).
+>
+> This repository is a personal fork of
+> **[italo-lombardi/Home-Assistant-EntityAvailability](https://github.com/italo-lombardi/Home-Assistant-EntityAvailability)**,
+> built on top of his brilliant work. Everything that makes this integration good —
+> the availability tracking, the history, MTBF/MTTR, battery and signal handling,
+> the device collapsing, the card — is his. This fork only adds rule-based
+> discovery for my own use, and exists so that my local changes have somewhere to
+> live. I claim no credit for it and I want none.
+>
+> **If this is useful to you, please send your thanks and your support to the
+> original author, not to me:**
+>
+> [![Buy Italo a Coffee](https://img.shields.io/badge/Buy%20Italo%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/italolombardi)
+> [![PayPal Italo](https://img.shields.io/badge/PayPal%20Italo-00457C?style=flat&logo=paypal&logoColor=white)](https://paypal.me/ItaloLombardi)
+>
+> **Please use the upstream project, not this fork** — it is maintained, documented
+> and supported, and this one is not. Issues found here should go to
+> [upstream](https://github.com/italo-lombardi/Home-Assistant-EntityAvailability/issues)
+> only if you can reproduce them there.
+
+<a href="https://github.com/italo-lombardi/Home-Assistant-EntityAvailability"><img src="https://img.shields.io/badge/upstream-italo--lombardi%2FHome--Assistant--EntityAvailability-41BDF5" alt="Upstream project"></a>
+<a href="https://www.home-assistant.io/"><img src="https://img.shields.io/badge/Home%20Assistant-2024.1%2B-blue.svg" alt="Home Assistant"></a>
+<a href="./LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?logo=gnu&logoColor=white" alt="License GPL-3.0"></a>
+
+Licensed **GPL-3.0**, same as upstream, with the original copyright intact.
+
+### What this fork changes
+
+- Rule-based **discovery**: monitored entities are resolved from integration / area /
+  label rules instead of a hand-maintained list, and re-resolve live on registry changes.
+- Signal (RSSI/LQI) resolution through `via_device`, so child devices inherit the
+  parent's radio.
+- Run-length encoded availability history, stored outside `.storage/` to keep it
+  out of backups.
+- Battery readings follow Home Assistant exactly — no retained values once a
+  source sensor goes unavailable.
+- A separate companion card lives outside this repository.
+
+---
+
+Monitor entity availability in Home Assistant. Track offline entities, availability history, and degraded states with a custom dashboard card.
+
+---
+
+## Features
+
+- **Multi-group support** -- organize entities by function (Security, Climate, Media, etc.)
+- **Combined groups** -- merge multiple groups into a single aggregate sensor set for cross-group automations (offline count, low battery, any-offline binary sensor)
+- **Configurable bad states** -- define which states count as offline (`unavailable`, `unknown`, or custom)
+- **Cooldown timer** -- ignore brief blips before marking an entity offline
+- **Availability % sensors** -- track uptime over today, 3-day, 5-day, and 7-day windows
+- **Reliability sensors (MTBF + MTTR)** -- flag devices that keep flaking out: separate diagnostic sensors for how *often* each device breaks (MTBF) and how *long* each outage lasts (MTTR), so a genuinely flaky device is distinguishable from one that had a single long outage at the same uptime %
+- **Bus events** -- fires `entity_availability_offline` / `entity_availability_recovered` / `entity_availability_low_battery` / `entity_availability_battery_ok` / `entity_availability_stale` / `entity_availability_stale_recovered` on the HA event bus for use as native automation triggers
+- **Battery monitoring** -- auto-detect or manually map battery entities; supports numeric (%) and text states (`low`)
+- **Degraded entity detection** -- flag entities with low battery or stale data
+- **Recently offline / recovered sensors** -- track which entities went offline or recovered within a configurable time window
+- **Device name display** -- optionally show the HA device name instead of entity friendly name in offline/recovered sensor states
+- **Indefinite suppression** -- suppress an entity with no expiry via `suppress_indefinitely`
+- **Maintenance/suppression mode** -- temporarily exclude entities from monitoring
+- **Non-Essential entity level** -- mark entities as non-essential: shown on the card but excluded from KPIs (offline count, availability %, MTBF, MTTR) and alerts; useful for expected-offline devices (TV in standby, printer off between jobs) without needing a separate group
+- **Signal strength monitoring** -- optional per-group feature (disabled by default). Bind a signal sensor and select the network type for each entity. Supported protocols: Wi-Fi, Zigbee (LQI and RSSI/dBm), Z-Wave, Bluetooth, Thread, LTE/4G, 5G, LoRaWAN, Percentage (0–100%), Generic/RSSI. Auto-detects sensors via `SIGNAL_STRENGTH` device class or naming conventions (`*_linkquality` for Z2MQTT, `*_signal_strength` for BLE, `*_rssi`, `*_lqi`, `*_signal`). Fires `entity_availability_poor_signal` / `entity_availability_signal_ok` events.
+- **Custom Lovelace card** -- traffic-light status display with at-a-glance health overview
+- **Card: icon mode for stats row** -- `show_stat_icons: true` replaces text labels (Online/Offline/Low Battery/Stale/Poor Signal) with MDI icons in the stats row (default off)
+- **Self-managed storage** -- no recorder dependency; data stored in `.storage`
+- **Recorder-friendly writes** -- sensors only publish state when value or attributes actually change, so steady-state networks don't generate redundant history rows every coordinator tick
+- **Survives HA restarts** -- availability history persisted via HA Store
+- **Human-readable state labels in tooltip** -- the card's HA State tooltip row shows translated labels (e.g. "Clear (off)", "Problem (on)", "Home (home)") alongside raw states, sourced from HA's built-in translation layer
+
+---
+
+## Installation
+
+### HACS (Recommended)
+
+1. Open HACS in your Home Assistant instance.
+2. Go to **Integrations** and click the three-dot menu.
+3. Select **Custom repositories**.
+4. Add `https://github.com/italo-lombardi/Home-Assistant-EntityAvailability` with category **Integration**.
+5. Click **Install** and restart Home Assistant.
+
+### Manual
+
+1. Download the [latest release](https://github.com/italo-lombardi/Home-Assistant-EntityAvailability/releases).
+2. Copy the `custom_components/entity_availability/` folder into your `config/custom_components/` directory.
+3. Restart Home Assistant.
+
+---
+
+## Configuration
+
+This integration uses a config flow accessible from **Settings > Devices & Services > Add Integration > Entity Availability**.
+
+### Step 1: Choose Entry Type
+
+Choose whether to monitor a group of entities or combine existing groups.
+
+| Option | Description |
+|--------|-------------|
+| Monitor entities | Create a new group of entities to monitor |
+| Combine groups | Aggregate two or more existing groups into one (requires at least 2 groups already created) |
+
+![Step 1: Choose Entry Type](assets/00_create_entity.png)
+
+### Step 2a: Create Entity Group (Monitor entities path)
+
+| Field | Description |
+|-------|-------------|
+| Group Name | A descriptive name for this group (e.g., "Security Cameras") |
+| Entities to Monitor | Select the entities you want to fully monitor (included in all KPIs and alerts) |
+| Non-Essential entities | *(optional)* Entities shown on the card and counted in totals, but excluded from all KPIs (offline count, availability %, MTBF, MTTR) and never trigger alerts. Useful for devices where downtime is acceptable — a TV, a printer, a seasonal device. At least one entity in either field is required. |
+
+![Step 2a: Create Entity Group](assets/01_create_entity_group.png)
+
+### Step 3: Monitoring Settings
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| States considered offline | `unavailable`, `unknown` | States that mark an entity as offline |
+| Cooldown (seconds) | `60` | Time to wait before confirming an entity is offline |
+| Staleness threshold (minutes) | `0` (disabled) | Mark entity degraded if no state change in this time |
+| Count attribute updates as activity | `off` | When off, staleness uses `last_changed` (only main-state changes reset the timer). When on, it uses `last_updated`, so any update — including attribute-only changes and repeated same-value reports — resets it. Turn on for devices that report often but rarely change value. |
+
+![Step 3: Monitoring Settings](assets/02_monitoring_settings.png)
+
+### Step 4: Advanced Settings
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Low battery threshold (%) | `20` | Battery level below which an entity is considered degraded (0 = disabled) |
+| Enable signal strength monitoring | `off` | Track signal quality (dBm or %) for monitored entities. When enabled, a mapping step appears to bind a signal sensor and network type to each entity. |
+| Availability tracking windows | `today`, `7d` | Which time windows to create availability sensors for |
+| Recovery window (minutes) | `5` | How long entities remain visible in the recently-offline and recently-recovered sensors after the event |
+| Show device names | `off` | When enabled, offline/recovered sensor states show the HA device name (e.g. "Entrance Smoke Detector") instead of the entity friendly name. Falls back to friendly name for entities not linked to an HA device (helpers, template sensors) |
+| Collapse entities by device | `off` | **Requires Show device names.** When enabled, multiple entities belonging to the same physical device are counted as one across every sensor value, list, and event (offline, low battery, stale, poor signal). Entities only merge when they share the same device, name, battery level, and signal; entities not linked to a device are never merged. Availability %, MTBF, and MTTR stay per-entity. |
+![Step 4: Advanced Settings](assets/03_advanced_settings.png)
+
+### Device names, collapse, and the `{N}` marker
+
+**Show device names** and **Collapse entities by device** are related but distinct. Device names controls the *label* on a row; collapse controls *how many rows* a physical device produces. A group is **collapse active** only when **both** are on — the config flow rejects "collapse on / device names off" (`collapse_requires_device_names`), because collapse only earns its keep when device names would otherwise make two entities on one device render as the *same* string.
+
+Every list sensor renders each row once, sorted alphabetically. When two rows resolve to the **same** display string (two entities on a device shown by device name, or two entities sharing a friendly name), they are folded to `"<name> {N}"`, where `N` is the number of rows behind that name. `{N}` is a render-time marker only — it is not part of any device or entity name, and the numeric count sensors still count `N`. Severity lists (`offline_entities`, `low_battery`, `stale`, `poor_signal`) and recovery lists (`recently_offline`, `recently_recovered`) share the same collapse decision and the same sort, so their order and counts always agree within a group.
+
+#### Single group
+
+One device ("Balcony") exposes two monitored entities — a motion binary sensor ("Balcony Motion") and a luminance sensor ("Balcony Luminance"). It goes offline, then recovers:
+
+| use_device_names | collapse_devices | collapse active | `offline_entities` (severity) | `recently_offline` (recovery) | `affected_areas_recently_offline` |
+|:---:|:---:|:---:|---|---|---|
+| off | off | no | 2 / `"Balcony Luminance, Balcony Motion"` | 2 / `"Balcony Luminance, Balcony Motion"` | 1 / `"Balcony Area"` |
+| off | on¹ | no | 2 / `"Balcony Luminance, Balcony Motion"` | 2 / `"Balcony Luminance, Balcony Motion"` | 1 / `"Balcony Area"` |
+| on | off | no | 2 / `"Balcony {2}"` | 2 / `"Balcony {2}"` | 1 / `"Balcony Area"` |
+| on | on | **yes** | 1 / `"Balcony"` | 1 / `"Balcony"` | 1 / `"Balcony Area"` |
+
+¹ The config flow blocks this combination; it is only reachable via legacy or hand-edited YAML data, where the runtime still treats collapse as inactive.
+
+- **Device names off**: the two entities render as *distinct* friendly names, so nothing needs folding.
+- **Device names on, collapse off**: both entities resolve to the device name. You asked not to collapse, so each keeps its own row (count is 2) — but the identical strings fold to `"Balcony {2}"` so the state never reads as the doubled `"Balcony, Balcony"`.
+- **Both on**: the device is one row (count 1) labeled by its device name.
+- **Affected-areas sensors dedupe by area**, so one device always contributes one area regardless of the toggles.
+
+#### Combined groups
+
+A combined group re-applies each source group's **own** collapse decision — it mirrors what each group would show standalone. Two entities on one device merge in the combined view only when **their owning group is collapse active**; if the owning group is collapse-off, they stay separate rows (and fold to `{N}` when the device name repeats). When the same physical device appears through two *different* collapse-active groups, it still counts once.
+
+Two source groups, each with two entities on one device ("Balcony" in group A, "Kitchen" in group B), with different toggles:
+
+| Group A (udn / collapse) | Group B (udn / collapse) | combined `offline_entities` | combined `recently_offline` |
+|:---:|:---:|---|---|
+| on / on (active) | on / on (active) | 2 / `"Balcony, Kitchen"` | 2 / `"Balcony, Kitchen"` |
+| on / on (active) | on / off | 3 / `"Balcony, Kitchen {2}"` | 3 / `"Balcony, Kitchen {2}"` |
+| on / off | on / off | 4 / `"Balcony {2}, Kitchen {2}"` | 4 / `"Balcony {2}, Kitchen {2}"` |
+| off / off | off / off | 4 / `"Balcony Luminance, Balcony Motion, Kitchen Humidity, Kitchen Temp"` | 4 / (same, per-entity) |
+
+When the *same* entity appears in two groups with **different** config, each interpretation stays a separate row (it is not silently merged). Affected-areas sensors always dedupe by area across the whole combined view.
+
+
+### Step 5: Battery Entity Mapping (when battery threshold > 0)
+
+If you enable battery monitoring, a confirmation step appears showing each monitored entity with its auto-detected battery sensor. You can:
+
+- **Confirm** the auto-detected battery entity
+- **Override** with a different battery sensor
+- **Leave empty** for entities that don't have batteries (e.g., smart plugs, cloud services)
+
+Auto-detection checks battery sensors linked to the same device in Home Assistant, or sensors named `sensor.{entity_name}_battery`.
+
+Battery sensors that report `low` (text) are supported in addition to numeric percentages. **Binary sensors** (`binary_sensor.*`) are also supported — `on` = low battery, `off` = normal (e.g. `binary_sensor.device_battery_low`).
+
+![Step 5: Battery Entity Mapping](assets/04_battery_entity_mapping.png)
+
+### Step 6: Signal Strength Mapping (when signal monitoring is enabled)
+
+When signal strength monitoring is enabled, a mapping step appears for each monitored entity. For each entity you can:
+
+- **Select a signal sensor** — supports `sensor`, `input_number`, and `number` domains. Auto-detects sensors via `SIGNAL_STRENGTH` device class or naming conventions (`*_linkquality` for Zigbee2MQTT, `*_signal_strength` for Bluetooth, `*_rssi`, `*_lqi`, `*_signal`). Also strips known HA suffixes (`_last_seen`, `_last_updated`) before matching — so `sensor.device_last_seen` correctly suggests `sensor.device_linkquality`.
+- **Choose the network type** — selects the correct quality thresholds (good / ok / poor). **Auto-inferred**: sensors ending in `_linkquality` or `_lqi` default to "Zigbee (LQI)" automatically — no manual selection needed for Z2MQTT devices.
+- **Leave the sensor empty** — skips signal monitoring for that entity.
+
+Supported network types and thresholds:
+
+| Protocol | Good | OK | Poor |
+|----------|------|----|------|
+| 5G | ≥ −80 dBm | ≥ −100 dBm | < −100 dBm |
+| Bluetooth | ≥ −70 dBm | ≥ −85 dBm | < −85 dBm |
+| Generic/RSSI | ≥ −60 dBm | ≥ −80 dBm | < −80 dBm |
+| LoRaWAN | ≥ −100 dBm | ≥ −115 dBm | < −115 dBm |
+| LTE/4G | ≥ −80 dBm | ≥ −90 dBm | < −90 dBm |
+| Percentage | ≥ 70% | ≥ 40% | < 40% |
+| Thread | ≥ −70 dBm | ≥ −85 dBm | < −85 dBm |
+| Wi-Fi | ≥ −67 dBm | ≥ −70 dBm | < −70 dBm |
+| Z-Wave | ≥ −70 dBm | ≥ −85 dBm | < −85 dBm |
+| Zigbee (LQI) | ≥ 201 | ≥ 51 | < 51 (higher is better) |
+| Zigbee (RSSI/dBm) | ≥ −70 dBm | ≥ −85 dBm | < −85 dBm |
+
+![Step 6: Signal Strength Mapping](assets/04b_signal_entity_mapping.png)
+
+### Step 2b: Create Combined Group (Combine groups path)
+
+| Field | Description |
+|-------|-------------|
+| Combined Group Name | A descriptive name (e.g., "All Devices") |
+| Groups to Include | Select two or more existing Entity Availability groups |
+
+No further steps — combined groups read live from their source groups and require no additional configuration.
+
+![Step 2b: Create Combined Group](assets/01b_create_combined_group.png)
+
+### Options Flow
+
+All settings can be edited after creation via **Settings > Devices & Services > Entity Availability > Configure**.
+
+---
+
+## Sensors Created
+
+For each configured group, the following entities are created. All entity IDs use the prefix `entity_availability_` followed by the group slug (the lowercased, underscore-separated version of your group name).
+
+For example, a group named "Security Devices" produces the slug `security_devices`:
+
+| Entity | Type | State | Attributes |
+|--------|------|-------|------------|
+| `sensor..._offline_count` | Sensor | Number of entities currently offline | Per-entity dict keyed by entity ID: `offline` (bool), `since` (ISO timestamp or null), `last_recovery` (ISO timestamp or null), `last_downtime_seconds` (float or null) |
+| `sensor..._offline_entities` | Sensor | Comma-separated list of offline entity names (`"None"` when all online) | Full entity list, count |
+| `sensor..._recently_offline` | Sensor | Comma-separated friendly names of entities that went offline within the recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
+| `sensor..._recently_recovered` | Sensor | Comma-separated friendly names of entities that recovered from offline within the recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
+| `sensor..._low_battery` | Sensor | Comma-separated list of low battery entities (`"None"` when all OK) | Per-entity battery levels, count |
+| `sensor..._low_battery_count` | Sensor | Number of entities with low battery | — |
+| `sensor..._group_summary` | Sensor | Total entity count in the group | total_entities, online, offline, suppressed, battery_powered, low_battery |
+| `sensor..._availability_today` | Sensor | Group availability % for today | Per-entity availability breakdown |
+| `sensor..._availability_3d` | Sensor | Group availability % over 3 days | Per-entity availability breakdown |
+| `sensor..._availability_5d` | Sensor | Group availability % over 5 days | Per-entity availability breakdown |
+| `sensor..._availability_7d` | Sensor | Group availability % over 7 days | Per-entity availability breakdown |
+| `sensor..._mtbf` | Sensor (Diagnostic) | Group mean MTBF in hours (mean time between failures) | `total_offline_events`, `per_device` (`mtbf_hours`, `offline_events`) |
+| `sensor..._mttr` | Sensor (Diagnostic) | Group mean MTTR in minutes (mean time to recovery / average outage length) | `total_offline_events`, `per_device` (`mttr_minutes`, `offline_events`) |
+| `binary_sensor..._any_offline` | Binary Sensor (Problem) | ON when at least one essential entity is offline | `offline_entities`, `offline_count` |
+| `binary_sensor..._any_low_battery` | Binary Sensor (Battery) | ON when at least one essential entity has low battery | `low_battery_entities`, `low_battery_count` |
+| `binary_sensor..._any_stale` | Binary Sensor (Problem) | ON when at least one essential entity is stale (stopped reporting) | `stale_entities`, `stale_count` |
+| `binary_sensor..._any_offline_non_essential` | Binary Sensor (Problem) | ON when at least one non-essential entity is offline and not suppressed | `offline_entities` (list), `offline_count` |
+| `binary_sensor..._any_poor_signal` | Binary Sensor (Problem) | ON when at least one essential entity has poor signal (requires signal monitoring enabled) | `poor_signal_entities`, `poor_signal_count` |
+| `sensor..._poor_signal` | Sensor | Comma-separated list of essential entities with poor signal (`"None"` when all OK) — requires signal monitoring enabled | Per-entity signal_level and signal_quality, count |
+| `sensor..._poor_signal_count` | Sensor | Count of essential entities with poor signal | — |
+| `sensor..._affected_areas_count` | Sensor | Number of unique HA areas containing ≥1 offline, unsuppressed entity | — |
+| `sensor..._affected_areas` | Sensor | Comma-separated sorted list of affected area names (`"None"` when none) | `areas` (list), `count`, `unassigned_entities` (entity IDs with no area) |
+| `sensor..._affected_areas_recently_offline` | Sensor | Areas where ≥1 entity went offline within the recovery window (`"None"` when none) | `areas` (list), `count`, `window_minutes` |
+| `sensor..._affected_areas_recently_recovered` | Sensor | Areas where all entities are back online and most recent recovery is within the recovery window (`"None"` when none) | `areas` (list), `count`, `window_minutes` |
+| `sensor..._stale_entities` | Sensor | Comma-separated list of stale essential entity names (`"None"` when none) | `entities` (list), `count` |
+| `sensor..._stale_count` | Sensor | Number of stale essential entities | — |
+| `sensor..._offline_entities_non_essential` | Sensor | Comma-separated list of offline non-essential entity names (`"None"` when none) | `entities` (list), `count` |
+| `sensor..._offline_count_non_essential` | Sensor | Number of non-essential entities currently offline | — |
+| `sensor..._stale_entities_non_essential` | Sensor | Comma-separated list of stale non-essential entity names (`"None"` when none) | `entities` (list), `count` |
+| `sensor..._stale_count_non_essential` | Sensor | Number of stale non-essential entities | — |
+| `sensor..._low_battery_non_essential` | Sensor | Comma-separated list of low-battery non-essential entities (`"None"` when all OK) — includes offline entities | Per-entity battery levels, count |
+| `sensor..._low_battery_count_non_essential` | Sensor | Number of non-essential entities with low battery | — |
+| `binary_sensor..._any_offline_non_essential` | Binary Sensor (Problem) | ON when at least one non-essential entity is offline and not suppressed | `offline_entities` (list), `offline_count` |
+
+> **Note:** The Low Battery and Low Battery Count sensors are only created when battery threshold > 0. Availability window sensors are only created for windows selected during configuration. The recently-offline and recently-recovered sensors are always created regardless of battery threshold.
+
+![Sensors](assets/05_sensors.png)
+
+### Group Summary Sensor
+
+The Group Summary sensor provides a complete overview in its attributes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `total_entities` | Total number of entities in the group (includes non-essential) |
+| `essential` | Number of essential entities (= `total_entities - non_essential`) |
+| `online` | Essential entities currently online (excludes suppressed) |
+| `offline` | Essential entities currently offline (excludes suppressed) |
+| `suppressed` | Number of suppressed essential entities |
+| `stale` | Number of stale essential entities (count alias for `stale_entities \| length`) |
+| `poor_signal` | Number of essential entities with poor signal (count alias for `poor_signal_entities \| length`) |
+| `non_essential` | Total number of non-essential entities (including suppressed) |
+| `non_essential_entities` | List of unsuppressed non-essential entity IDs (note: `len(non_essential_entities)` < `non_essential` when any NE entities are suppressed) |
+| `non_essential_online` | Number of non-essential entities currently online (unsuppressed, not offline) |
+| `non_essential_offline` | Number of non-essential entities currently offline (unsuppressed) |
+| `non_essential_suppressed` | Number of non-essential entities currently suppressed |
+| `stale_non_essential` | Number of stale non-essential entities |
+| `poor_signal_non_essential` | Number of non-essential entities with poor signal |
+| `battery_powered` | Number of entities with a mapped battery sensor |
+| `low_battery` | Number of essential entities with battery below threshold |
+| `low_battery_non_essential` | Number of non-essential entities with battery below threshold |
+| `entities` | List of all monitored entity IDs in this group |
+| `battery_levels` | Dict of `{entity_id: battery_level}` for entities with battery sensors |
+| `signal_levels` | Dict of `{entity_id: signal_value}` for entities with signal sensors (when signal enabled) |
+| `signal_units` | Dict of `{entity_id: unit}` — "LQI", "dBm", or "%" per entity |
+| `suppressed_until` | Which entities are suppressed and when the suppression expires |
+| `stale_entities` | List of stale essential entity IDs (excludes suppressed and offline) |
+| `stale_entities_non_essential` | List of stale non-essential entity IDs |
+| `poor_signal_entities` | List of essential entity IDs with poor signal |
+| `poor_signal_entities_non_essential` | List of non-essential entity IDs with poor signal |
+| `offline_entities_non_essential` | List of non-essential entity IDs currently offline |
+| `offline_since` | When each currently offline entity first went offline |
+| `last_seen` | Last state-change timestamp per entity |
+
+Access these in templates:
+
+```yaml
+{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'essential') }}
+{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'online') }}
+{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'offline') }}
+{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'stale') }}
+{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'poor_signal') }}
+```
+
+See [AUTOMATION_EXAMPLES.md](AUTOMATION_EXAMPLES.md) for full template and automation examples.
+
+![Sensor Details & Attributes](assets/06_sensor_details_attributes.png)
+
+### Recovery Attributes
+
+When an entity comes back online, the `offline_count` sensor includes:
+
+- `last_recovery` -- timestamp of when the entity came back online
+- `last_downtime_seconds` -- how long the entity was offline (seconds)
+
+### Recently Offline / Recently Recovered Sensors
+
+These sensors keep a rolling record of activity within the configured recovery window (default 5 minutes). They are always created for every group, regardless of the battery threshold setting.
+
+| Sensor | State | Attributes |
+|--------|-------|------------|
+| `sensor..._recently_offline` | Comma-separated friendly names of entities that went offline within the window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
+| `sensor..._recently_recovered` | Comma-separated friendly names of entities that recovered from offline within the window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
+
+The window length is controlled by the **Recovery window** setting in Advanced Settings (Step 4) and can be changed at any time via the Options flow.
+
+Use these sensors in automations to get the exact device name(s) at the moment of an event — see the [Automation Ideas](#automation-ideas) section for examples.
+
+### Reliability (MTBF / MTTR) Sensors
+
+**In one line:** these sensors flag devices that keep flaking out, so you know what to fix or replace.
+
+The availability % sensor tells you *how much* total downtime a group had. It does **not** tell you whether that was one long outage or lots of tiny ones. Two separate sensors answer two different questions:
+
+- **How often do devices break?** → **MTBF** (Mean Time Between Failures) — the `Mean Time Between Failures` sensor (`sensor..._mtbf`), in hours.
+- **How long is each break?** → **MTTR** (Mean Time To Recovery) — the `Mean Time To Recovery` sensor (`sensor..._mttr`), in minutes.
+
+Both are **diagnostic** entities (grouped under the device's Diagnostic section, kept off the main dashboard) with `device_class: duration`, so Home Assistant renders them as durations and lets you convert units in the UI.
+
+**Why it matters — two devices can look identical on %, but be very different:**
+
+| | Breaks how often | Down how long | Verdict |
+|---|---|---|---|
+| Good sensor, one battery swap | rarely (high MTBF) | a while (high MTTR) | fine |
+| Sensor with a dying radio | constantly (low MTBF) | seconds (low MTTR) | replace it |
+
+Both might show "98% available." The percentage hides the difference; MTBF/MTTR exposes it. **Low MTBF (breaks often) is the alarm bell** — even when the % still looks healthy.
+
+**What you see:**
+
+| Entity / value | Meaning |
+|----------------|---------|
+| `Mean Time Between Failures` state (`h`) | Group-average uptime between failures, across entities that have failed at least once |
+| `Mean Time To Recovery` state (`min`) | Group-average outage length |
+| `total_offline_events` (attr on both) | Total offline→recovery cycles since monitoring started (or since last `reset_statistics`) |
+| `per_device` (attr on both) | Per-entity breakdown; each sensor exposes only its own metric — the MTBF sensor lists `mtbf_hours` + `offline_events`, the MTTR sensor lists `mttr_minutes` + `offline_events` |
+
+Each is its own sensor (rather than one sensor with attributes) so MTBF and MTTR can be charted, gauged, and triggered on independently. Why two units? MTBF is naturally hours-to-days, MTTR is seconds-to-minutes — each uses the scale that keeps its typical value human-readable (an MTTR shown in hours would read `0.008 h`). Each sensor carries its own per-device breakdown as an attribute (a map is not a single chartable number), so `sensor..._mttr`'s `per_device` answers "which device recovers slowest" without cross-referencing the MTBF sensor.
+
+**Notes:**
+
+- Values stay empty until an entity has completed at least one full offline→recovery cycle. A device that has never failed shows `null` (you can't measure "time between failures" with zero failures) and is left out of the group average.
+- The counters are all-time and event-driven — no extra database or storage growth, and no long-term statistics generated.
+- Reset them any time with the [`reset_statistics`](#entity_availabilityreset_statistics) action (e.g. after planned maintenance).
+- The math, for reference: `MTBF hours = (time monitored − total downtime) / number of failures / 3600`; `MTTR minutes = total downtime / number of failures / 60`.
+
+---
+
+## Combined Groups
+
+A combined group aggregates two or more monitored groups into a single set of sensors. Useful for cross-group automations — alert when anything across your entire home is offline without duplicating entity logic.
+
+See [Step 2b in the Configuration section](#step-2b-create-combined-group-combine-groups-path) for setup instructions.
+
+**Dedup and auto-collapse in combined view:**
+- The same entity in multiple source groups is counted once when all groups share identical configuration (battery sensor, signal sensor, non-essential flag, offline states). If any setting differs, each group's interpretation appears as its own row so no monitoring signal is silently dropped.
+- Source groups with **Show device names** enabled automatically collapse same-device entities into one row in the combined view (using the same device key as the group-level collapse option). Groups without Show device names keep their entities as individual rows.
+
+### Sensors Created
+
+All entity IDs use the prefix `entity_availability_` followed by the combined group slug.
+
+For example, a combined group named "All Devices" produces the slug `all_devices`:
+
+| Entity | Type | State | Notes |
+|--------|------|-------|-------|
+| `sensor..._combined_summary` | Sensor | Total offline count across all source groups | Attributes: `total_entities`, `online`, `offline`, `stale`, `low_battery`, `suppressed`, `non_essential`, `non_essential_online`, `non_essential_offline`, `non_essential_suppressed`, `non_essential_entities`, `battery_powered`, `battery_enabled`, `staleness_enabled`, `signal_enabled`, `poor_signal`, `status` (`"ok"\|"degraded"\|"offline"`), `status_color` (`"green"\|"yellow"\|"red"`), `entities`, `display_names`, `battery_levels`, `signal_levels`, `signal_units`, `suppressed_until`, `offline_since`, `last_seen`, `ok_signal_entities`, `offline_entities`, `stale_entities`, `poor_signal_entities`, `offline_entities_non_essential`, `stale_entities_non_essential`, `poor_signal_entities_non_essential`, `low_battery_entities`, `low_battery_entities_non_essential`, `groups`. The `groups` dict is keyed by `entry_id`: `{name, entity_id, total, online, offline, stale, low_battery, suppressed, non_essential, non_essential_entities, non_essential_online, non_essential_offline, non_essential_stale, non_essential_low_battery, non_essential_poor_signal, battery_enabled, staleness_enabled, battery_powered, signal_enabled, poor_signal, offline_entities, stale_entities, poor_signal_entities, offline_entities_non_essential, stale_entities_non_essential, poor_signal_entities_non_essential}`. `total` excludes non-essential entities. `missing_groups` (list of entry IDs) present when one or more source groups are not loaded. |
+| `sensor..._offline_entities` | Sensor | Comma-separated names of offline entities (`"None"` when all online) | Attributes: `entities` (list of entity IDs), `count` |
+| `sensor..._recently_offline` | Sensor | Comma-separated friendly names of entities that went offline within each source group's recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when a source group has device-collapse active), `count` — no `window_minutes` (each source group uses its own configured window) |
+| `sensor..._recently_recovered` | Sensor | Comma-separated friendly names of entities that recovered within each source group's recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when a source group has device-collapse active), `count` — no `window_minutes` |
+| `sensor..._low_battery` | Sensor | Comma-separated names of low battery entities (`"None"` when all OK) | Attributes: `devices` (dict of entity ID → battery level), `count` |
+| `sensor..._low_battery_count` | Sensor | Number of entities with low battery across all groups | — |
+| `binary_sensor..._any_offline` | Binary Sensor (Problem) | ON when any entity across all groups is offline | Attributes: `offline_entities`, `offline_count` |
+| `sensor..._affected_areas_count` | Sensor | Number of unique HA areas containing ≥1 offline, unsuppressed entity across all groups | — |
+| `sensor..._affected_areas` | Sensor | Comma-separated sorted list of affected area names (`"None"` when none) | `areas` (list), `count`, `unassigned_entities` (entity IDs with no area) |
+| `sensor..._affected_areas_recently_offline` | Sensor | Areas where ≥1 entity went offline within the relevant source group's recovery window (`"None"` when none) | `areas` (list), `count` |
+| `sensor..._affected_areas_recently_recovered` | Sensor | Areas where all entities are back online and most recent recovery is within the relevant source group's recovery window (`"None"` when none) | `areas` (list), `count` |
+
+Suppressed entities are excluded from offline/alert counts in combined sensor states. Their availability history continues to count toward group availability averages.
+
+> **Note:** Combined groups do not create dedicated stale sensors (`stale_count`, `stale_entities`, `any_stale`). Stale data is available via the `stale` attribute on `sensor..._combined_summary`.
+
+The `recently_offline` and `recently_recovered` sensors use each source group's own **Recovery window** setting — if groups have different windows, each group's devices are filtered by that group's window.
+
+![Combined Group Sensors](assets/05b_combined_sensors.png)
+
+### Example Automation
+
+Alert when anything across your entire home goes offline:
+
+```yaml
+automation:
+  - alias: "Notify any device offline (whole home)"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.entity_availability_all_devices_any_offline
+        to: "on"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Device Offline"
+          message: >
+            {{ states('sensor.entity_availability_all_devices_offline_entities') }}
+```
+
+---
+
+## How Availability % Works
+
+Availability sensors show what percentage of the time your entities were online during a given window (today, 3 days, 7 days, etc.).
+
+The integration samples each entity's state in the background. If online, that time counts toward its availability. If offline, it doesn't.
+
+**Group availability** is the average of all monitored entities in the group, including suppressed ones. Suppressing an entity silences its alerts and stops recording new offline time — it does not retroactively remove past downtime from the availability calculation. The group % only improves as the entity's offline buckets age out of the rolling window.
+
+**Example:** 3 entities monitored over 24 hours. Entity A was offline all day (0%), B and C were always online (100%). Group availability = 66.7%.
+
+> **Important:** Availability sensors show `unavailable` right after the integration is first installed — this is normal. They will populate as data is collected.
+
+---
+
+## Services
+
+> **`group:` takes the group *name*** (e.g. `Security Devices`), not the entity-ID slug. The UI action editor's group picker passes the config-entry ID automatically; in hand-written YAML, use the exact group name shown in Settings.
+
+### `entity_availability.suppress`
+
+Temporarily exclude an entity (or all entities in a group) from monitoring and offline alerts.
+
+```yaml
+# Suppress a single entity (all groups that monitor it)
+service: entity_availability.suppress
+data:
+  entity_id: switch.garden_lights
+  duration: 120  # minutes (default: 60, max: 10080)
+```
+
+```yaml
+# Suppress a single entity in a specific group only
+service: entity_availability.suppress
+data:
+  entity_id: switch.garden_lights
+  group: Security Devices
+  duration: 120
+```
+
+```yaml
+# Suppress all entities in a group
+service: entity_availability.suppress
+data:
+  group: Security Devices
+  duration: 60
+```
+
+> **Group field:** When both `entity_id` and `group` are provided, the suppression is scoped to that group only — the entity remains monitored in any other groups it belongs to. When only `entity_id` is provided, the entity is suppressed in all groups that monitor it. In the Actions UI, the `group` field shows a dropdown of all Entity Availability config entries. In YAML automations you can use either the group name or the config entry ID.
+
+**Use case:** Suppress monitoring during planned maintenance, firmware updates, or known downtime. Suppressing an entity silences offline alerts and stops accumulating new offline time — it does not remove past downtime from the availability %. Use `reset_statistics` after unsuppressing if you want to clear the historical record.
+
+![Suppress Entity Action](assets/09_suppress_entity_action.png)
+
+### `entity_availability.unsuppress`
+
+Resume monitoring for a previously suppressed entity or group.
+
+```yaml
+# Unsuppress a single entity
+service: entity_availability.unsuppress
+data:
+  entity_id: switch.garden_lights
+```
+
+```yaml
+# Unsuppress all entities in a group
+service: entity_availability.unsuppress
+data:
+  group: Security Devices
+```
+
+![Unsuppress Entity Action](assets/10_unsuppress_entity_action.png)
+
+![Actions Overview](assets/08_actions.png)
+
+### `entity_availability.suppress_indefinitely`
+
+Suppress an entity (or all entities in a group) with no expiry. The suppression remains active until explicitly cleared with `entity_availability.unsuppress`.
+
+```yaml
+# Suppress a single entity indefinitely
+service: entity_availability.suppress_indefinitely
+data:
+  entity_id: switch.garden_lights
+```
+
+```yaml
+# Suppress all entities in a group indefinitely
+service: entity_availability.suppress_indefinitely
+data:
+  group: Security Devices
+```
+
+**Use case:** Decommissioned or long-term offline devices that you want to keep in the group without generating alerts. Because there is no expiry, remember to `unsuppress` when monitoring should resume.
+
+### `entity_availability.reset_statistics`
+
+Clear availability history **and** reliability counters (MTBF/MTTR, offline-event count) for an entity or an entire group. Availability % windows and the Reliability sensor start accumulating fresh.
+
+```yaml
+# Reset a single entity (all groups that monitor it)
+service: entity_availability.reset_statistics
+data:
+  entity_id: sensor.living_room_temperature
+```
+
+```yaml
+# Reset a single entity in a specific group only
+service: entity_availability.reset_statistics
+data:
+  entity_id: sensor.living_room_temperature
+  group: Security Devices
+```
+
+```yaml
+# Reset every entity in a group
+service: entity_availability.reset_statistics
+data:
+  group: Security Devices
+```
+
+**Use case:** Run after planned maintenance (firmware flash, deliberate power-down) so a known outage does not permanently drag down the availability % or skew MTBF/MTTR.
+
+---
+
+## Bus Events
+
+The integration fires events on the Home Assistant event bus when a monitored entity crosses state (after its cooldown, and outside the 60 s startup grace period). All payload fields reference essential (monitored) entities only — non-essential entities are excluded from event payloads.
+
+| Event | Fired when | Data |
+|-------|-----------|------|
+| `entity_availability_offline` | An essential entity is confirmed offline | `entity_id`, `group`, `entry_id`, `offline_since`, `offline_count`, `offline_entities`, `source_groups` *(combined only)* |
+| `entity_availability_recovered` | An offline essential entity returns online | `entity_id`, `group`, `entry_id`, `downtime_seconds`, `offline_count`, `offline_entities`, `source_groups` *(combined only)* |
+| `entity_availability_low_battery` | An essential entity's battery drops below threshold | `entity_id`, `group`, `entry_id`, `battery_level`, `low_battery_count`, `low_battery_entities`, `source_groups` *(combined only)* |
+| `entity_availability_battery_ok` | An essential entity's battery recovers above threshold | `entity_id`, `group`, `entry_id`, `battery_level`, `low_battery_count`, `low_battery_entities`, `source_groups` *(combined only)* |
+| `entity_availability_stale` | An essential entity stops reporting state changes *(individual groups only)* | `entity_id`, `group`, `entry_id`, `stale_since`, `stale_count`, `stale_entities` |
+| `entity_availability_stale_recovered` | A stale essential entity resumes reporting *(individual groups only)* | `entity_id`, `group`, `entry_id`, `stale_since`, `stale_count`, `stale_entities` |
+| `entity_availability_poor_signal` | An entity's signal drops to poor quality *(individual groups only)* | `entity_id`, `group`, `entry_id`, `signal_level`, `signal_quality`, `poor_signal_count`, `poor_signal_entities` |
+| `entity_availability_signal_ok` | An entity's signal recovers from poor quality *(individual groups only)* | `entity_id`, `group`, `entry_id`, `signal_level`, `signal_quality`, `poor_signal_count`, `poor_signal_entities` |
+
+`offline_count` and `offline_entities` reflect the group's offline state at the moment of the event. For `entity_availability_offline` the newly-offline entity is included; for `entity_availability_recovered` it is already excluded. The same snapshot rule applies to all paired events (`low_battery`/`battery_ok`, `stale`/`stale_recovered`, `poor_signal`/`signal_ok`). `offline_since` is always set for individual group events; for combined groups it may be `null` — guard with `if trigger.event.data.offline_since` before using `as_datetime()`.
+
+**Combined groups** fire `offline`, `recovered`, `low_battery`, and `battery_ok` events with the same payload plus `source_groups`. Stale and signal events are only fired by individual groups.
+
+**`source_groups` (combined groups only):** a list of the home group names that own the entity. For most entities this is a one-element list (e.g. `["Switches"]`); entities shared across multiple home groups list all names. Use it to include the originating group in notifications:
+
+```yaml
+message: >-
+  {{ trigger.event.data.entity_id }} went offline
+  (group: {{ trigger.event.data.source_groups | join(', ') }})
+```
+
+These are cleaner automation triggers than watching sensor attributes with templates:
+
+```yaml
+automation:
+  - alias: Alert on any monitored entity going offline
+    trigger:
+      - platform: event
+        event_type: entity_availability_offline
+    action:
+      - service: notify.mobile_app
+        data:
+          message: >-
+            {{ trigger.event.data.entity_id }} in
+            {{ trigger.event.data.group }} went offline.
+```
+
+---
+
+## Automation Ideas
+
+Ready-to-adapt automations for every feature — bus events, offline/recovery, availability %, reliability (MTBF/MTTR), battery, affected areas, combined groups, and services — live in **[AUTOMATION_EXAMPLES.md](AUTOMATION_EXAMPLES.md)**.
+
+Two to get started:
+
+```yaml
+# Notify when any monitored entity goes offline
+automation:
+  alias: EA - any entity offline
+  trigger:
+    - platform: event
+      event_type: entity_availability_offline
+  action:
+    - service: notify.mobile_app_my_phone
+      data:
+        message: >-
+          {{ trigger.event.data.entity_id }} in {{ trigger.event.data.group }} went offline.
+          {{ trigger.event.data.offline_count }} device(s) now offline.
+```
+
+```yaml
+# Daily availability report
+automation:
+  alias: EA - daily report
+  trigger:
+    - platform: time
+      at: "08:00:00"
+  action:
+    - service: notify.mobile_app_my_phone
+      data:
+        message: >
+          Today: {{ states('sensor.entity_availability_security_devices_availability_today') }}%
+          7-day: {{ states('sensor.entity_availability_security_devices_availability_7d') }}%
+```
+
+---
+
+## Custom Lovelace Card
+
+The integration ships with a custom card for quick health visualization. It is automatically registered as a Lovelace resource when the integration loads.
+
+The card works with both regular groups and combined groups. It auto-detects the group type and adjusts its layout accordingly.
+
+### Manual Installation (if auto-registration fails)
+
+1. Add the resource in **Settings > Dashboards > Resources**:
+   - URL: `/entity_availability/entity-availability-card.js`
+   - Type: JavaScript Module
+
+### Configuration
+
+```yaml
+type: custom:entity-availability-card
+group: security_devices        # group slug (lowercase, underscores)
+# title: "My Devices"         # optional override
+show_affected_areas: false
+show_availability: true
+show_groups: true            # show groups breakdown table (combined cards only)
+show_entities: true
+show_non_essential_stats: false
+entities_expanded: false
+show_actions: false
+show_suppress_toggle: false
+show_stat_icons: false
+show_table_icons: false
+compact: false
+entity_detail: "off"           # "off" | "tooltip" | "inline"
+entity_filter: "all"           # "all" | "offline" | "online"
+show_entity_health: true       # hide/show Bat. & Signal columns in entity list
+sort_by: status                # status | name_asc | name_desc | battery_asc | battery_desc | signal_asc | signal_desc
+group_sort_by: name_asc        # name_asc | name_desc | offline_desc (combined groups)
+availability_thresholds:
+  high: 99
+  mid: 95
+availability_colors:
+  high: "#4caf50"
+  mid: "#ff9800"
+  low: "#f44336"
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `group` | (required) | Group slug (e.g., `security_devices`) — works for both regular and combined groups |
+| `title` | (auto from group) | Custom card title |
+| `show_affected_areas` | `false` | Show offline area names as pills between stats and availability bars (both regular and combined groups) |
+| `show_availability` | `true` | Show availability progress bars (regular groups only) |
+| `show_groups` | `true` | Show groups breakdown table (combined groups only). Independent of `show_entities` — both can be toggled separately. |
+| `show_entities` | `true` | Show expandable entity list (regular groups), or flat per-entity table (combined groups). Independent of `show_groups`. |
+| `show_non_essential_stats` | `false` | Show non-essential stats. For **regular groups**: adds a NE sub-stats row (Online / Offline / Stale / Low Battery) below the main stats row and includes NE entities in the entity list sorted to the bottom. For **combined groups**: adds a `↳ Non-Essential` sub-row per group in the breakdown table showing NE Online / Offline and (when feature enabled) Bat. / Stale counts. When `false`, non-essential entities are hidden from the card entirely. |
+| `entities_expanded` | `false` | Start entity list / group breakdown expanded |
+| `show_actions` | `false` | Show suppress action buttons (regular and combined groups). Shows three buttons: **Suppress All** (offline + stale + poor signal, 60 min), **Suppress Offline** (offline only, 60 min), **Unsuppress All**. When `show_non_essential_stats` is on, NE entities are included. |
+| `show_suppress_toggle` | `false` | Show per-entity suppress/unsuppress icon button on each entity row. Click suppresses indefinitely within this card's group only; click the orange bell to unsuppress. (regular groups only) |
+| `entity_detail` | `"off"` | `"off"` / `"tooltip"` (hover to see details) / `"inline"` (always show details). In compact mode with inline, shows state + last-changed time. Timestamp states are formatted as readable dates. (regular groups only) |
+| `entity_filter` | `"all"` | Filter entity list: `"all"`, `"offline"` (problems only: offline/stale/low battery), `"online"` (healthy only). Section title and count update to reflect filter (e.g., "Offline Entities (2/6)"). (regular groups only) |
+| `compact` | `false` | Reduced padding mode |
+| `show_entity_health` | `true` | Show health columns (Bat. & Signal) in the entity list when the feature is active (regular groups only) |
+| `sort_by` | `status` | Entity list sort order: `status`, `name_asc`, `name_desc`, `battery_asc`, `battery_desc`, `signal_asc`, `signal_desc` (regular groups only) |
+| `group_sort_by` | `name_asc` | Sort order for both the groups breakdown table and the flat entity list: `name_asc`, `name_desc`, `offline_desc` (most offline first). (combined groups only) |
+| `availability_thresholds` | `{high: 99, mid: 95}` | % thresholds for bar colors (regular groups only) |
+| `availability_colors` | `{high, mid, low}` | Custom hex colors for bars (regular groups only) |
+
+> **Migration:** `show_entity_tooltips: true` from previous versions is automatically treated as `entity_detail: "tooltip"` — no manual update needed.
+
+The `group` field accepts any group slug. The card uses the prefix `entity_availability_` + group slug to locate all related entities and detect the group type automatically.
+
+All options are configurable via the visual card editor UI. Options that do not apply to the selected group type are hidden automatically in the editor.
+
+![Card Configuration — Regular Group](assets/07_ui_card_configuration_screen.png)
+
+![Card Configuration — Combined Group](assets/07b_ui_card_configuration_combined.png)
+
+### Visual Editor
+
+The card editor includes a **Group Slug** dropdown populated from all discovered groups, split into two sections:
+
+- **Groups** — regular monitored groups
+- **Combined Groups** — aggregated combined groups
+
+Selecting a combined group hides editor controls that don't apply (availability bars, entity filter, entity detail, entity sort order, suppress buttons, color thresholds), and shows two independent checkboxes — **Show Groups** (breakdown table) and **Show Entity List** (flat entity table) — plus the **Sort Groups & Entities By** dropdown instead.
+
+### Card Preview — Regular Group
+
+```
+┌───────────────────────────────────────────────┐
+│ ✓ Security Devices                    All OK  │
+├───────────────────────────────────────────────┤
+│    Online: 4  Offline: 1  Stale: 1  Bat: 1    │
+├───────────────────────────────────────────────┤
+│  Today   ██████████████████████░░░░   98.2%   │
+│  7 Days  ████████████████████░░░░░░   95.1%   │
+├───────────────────────────────────────────────┤
+│  ▾ Entities (6)                               │
+│    Entity            Condition       Bat.     │
+│    ───────────────────────────────────────    │
+│    ● Camera 1        Online          100%     │
+│    ● Camera 2        Online           85%     │
+│    ▲ Door Lock       Low Battery      18%     │
+│    ✖ Sensor 3        Offline for 12m          │
+│    ◌ Motion 1        Stale                    │
+│    ● Smart Plug      Suppressed               │
+├───────────────────────────────────────────────┤
+│       [Suppress All]   [Unsuppress All]       │
+└───────────────────────────────────────────────┘
+```
+
+### Card Preview — Combined Group
+
+```
+┌───────────────────────────────────────────────┐
+│ ✖ All Devices                      2 Offline  │
+├───────────────────────────────────────────────┤
+│   Online: 11  Offline: 2   Low Battery: 1     │
+├───────────────────────────────────────────────┤
+│  ▾ Groups (3)                                 │
+│    Group              Online  Offline  Bat.   │
+│    ─────────────────────────────────────────  │
+│    Security Devices       4        1     1    │
+│    Climate Devices        5        1     0    │
+│    Media Devices          2        0     0    │
+└───────────────────────────────────────────────┘
+```
+
+![Card — Side by Side](assets/11_card_side_by_side.png)
+
+### Dashboard Example
+
+![Dashboard Example](assets/12_dashboard_example.png)
+
+---
+
+## FAQ
+
+**Q: The card shows "configuration error" on the iOS Companion App but works in a browser. What's wrong?**
+A: Two things can cause this. First, try **Settings → Companion App → Debug → Reset frontend cache** in the iOS app — WKWebView caches JS aggressively and a stale copy of the card can break after a HA update. Second, if resetting the cache doesn't help, update to v0.3.1 or later, which replaced the card's element bootstrap with a more reliable approach that works with the iOS WebView's load order.
+
+**Q: Does this integration require the Recorder component?**
+A: No. Entity Availability uses its own `.storage` file for tracking history. This keeps your database lean.
+
+**Q: Why are availability sensors showing "unavailable" after installation?**
+A: This is normal. Availability sensors need time to collect data before they can report a percentage. For "today" they need at least one 5-minute data point; for longer windows (3d, 7d) they need at least 10% of expected data. They will populate automatically as the integration runs.
+
+**Q: What happens after a Home Assistant restart?**
+A: Historical availability data is stored in `.storage` and survives restarts. The integration resumes tracking immediately. Offline alerts are suppressed for the first 60 seconds after startup to avoid false-positive notifications for entities that are already offline before HA finishes loading.
+
+**Q: Can I monitor the same entity in multiple groups?**
+A: Yes. An entity can belong to multiple groups simultaneously.
+
+**Q: How does the cooldown work?**
+A: When an entity enters a "bad" state, the integration waits for the configured cooldown period before marking it offline. If the entity recovers within the cooldown, it is never counted as offline. This prevents false alerts from brief connectivity blips. Recovery (going back online) is instant -- no cooldown on the way back.
+
+**Q: What counts as "degraded"?**
+A: An entity is degraded if its battery level is below the configured threshold, or if it has not reported a state change for longer than the staleness threshold.
+
+**Q: How is the battery level determined?**
+A: During setup, you map each entity to its battery sensor. Auto-detection finds battery sensors on the same device or by naming convention (`sensor.{name}_battery`). Both numeric (%) and text (`low`) battery states are supported.
+
+**Q: Can I suppress an entity via automation?**
+A: Yes. Use the `entity_availability.suppress` service in any automation or script.
+
+**Q: How do I access all sensor values in templates?**
+A: Use `states()` for the main value and `state_attr()` for attributes. Example: `{{ state_attr('sensor.entity_availability_security_devices_group_summary', 'online') }}`
+
+**Q: Home Assistant reports a repair "... no longer has a state class" for a Group/Combined Summary sensor. What do I do?**
+A: Expected after upgrading to v0.3.12. The `Group Summary` and `Combined Summary` sensors used to generate long-term statistics for a value (entity count) that rarely changes, bloating the recorder database. That was removed. Open **Settings → System → Repairs** and resolve the issue to purge the orphaned statistics rows, or delete them via **Developer Tools → Statistics**. The sensors keep working normally — only their unused statistics history is cleared.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/my-feature`).
+3. Commit your changes with clear commit messages.
+4. Open a Pull Request against `main`.
+
+### Development Setup
+
+```bash
+git clone https://github.com/italo-lombardi/Home-Assistant-EntityAvailability.git
+
+python -m venv venv
+source venv/bin/activate
+
+pip install homeassistant pytest pytest-homeassistant-custom-component
+```
+
+### Running Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+### Guidelines
+
+- Follow the [Home Assistant integration development guidelines](https://developers.home-assistant.io/).
+- Add translations for any new user-facing strings.
+- Write tests for new functionality.
+- Keep PRs focused -- one feature or fix per PR.
+
+---
+
+## Sibling Integrations
+
+Other Home Assistant integrations by the same author:
+
+| Integration | Description |
+|-------------|-------------|
+| [Entity Guard](https://github.com/italo-lombardi/Home-Assistant-EntityGuard) | Enforces entity state via declarative rules — replaces hand-written auto-off, auto-lock, and kill-switch automations |
+| [Entity Distance](https://github.com/italo-lombardi/Home-Assistant-EntityDistance) | Tracks distance between 2–5 HA entities (persons, devices, zones) — direction, speed, ETA, proximity, group sensors |
+| [Entity State Tracker](https://github.com/italo-lombardi/Home-Assistant-EntityStateTracker) | Tracks time-in-state and transitions across time frames — per-state breakdowns and compliance scoring, with a custom card |
+| [Fuel Compare](https://github.com/italo-lombardi/Home-Assistant-FuelCompare) | Tracks live fuel prices from 36 providers across 30 countries |
+| [WashWise](https://github.com/italo-lombardi/Home-Assistant-WashWise) | Decide whether to wash your car, bike, or solar panels — or skip garden irrigation — based on the weather forecast. Produces a verdict, 0–100 score, blocking reason, and per-day breakdown with a custom Lovelace card |
+| [DashSnap](https://github.com/italo-lombardi/DashSnap) | Record or screenshot any web page via headless Chromium — HA dashboards, Grafana, public pages. Available as a Home Assistant Add-on (HAOS/Supervised) or standalone Docker container |
+| [DashSnap Integration](https://github.com/italo-lombardi/DashSnap-Integration) | Trigger DashSnap recordings and screenshots from HA automations and scripts — exposes `dashsnap.record_ha` and `dashsnap.record` services |
+
+---
+
+## License
+
+This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
