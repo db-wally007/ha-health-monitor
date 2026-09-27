@@ -37,7 +37,9 @@ Licensed **GPL-3.0**, same as upstream, with the original copyright intact.
   out of backups.
 - Battery readings follow Home Assistant exactly — no retained values once a
   source sensor goes unavailable.
-- A separate companion card lives outside this repository.
+- A companion console card, [`health-monitor-card/`](./health-monitor-card/README.md):
+  a sortable, filterable table of every monitored device and helper, with history
+  per row. It is a separate dashboard resource from the integration's own card.
 
 ---
 

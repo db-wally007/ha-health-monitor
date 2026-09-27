@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3+hm.2] - 2026-09-27
+
+First release of this fork. Everything below is relative to upstream 0.5.3.
+
+### Added
+- **health-monitor-card v3.21.1** (`health-monitor-card/`): companion console card. It has summary tiles, a problem-history chart, and Devices / Helpers / Battery / Signal tabs. Search plus multi-select Integration and Area filters and status chips narrow the table, and non-device rows are marked `_`. An expanded row shows its availability timeline (drawn by [state-history-card](https://github.com/db-wally007/state-history-card) ≥ 0.1.6) or its battery/RSSI chart. The header stays pinned under Home Assistant's toolbar, including when kiosk-mode hides it. See its README.
+- **Rule-based discovery**: monitored entities are resolved from integration / area / label rules instead of a hand-maintained list, and re-resolve live on entity and device registry changes, with no restart.
+
+### Changed
+- Signal (RSSI/LQI) resolves through `via_device`, so child devices inherit the parent's radio.
+- Availability history is run-length encoded and stored in `config/.cache/entity_availability/`, outside `.storage/`, which keeps it out of backups.
+
+### Fixed
+- Battery readings follow Home Assistant exactly: no retained level once the source sensor goes unavailable. A battery sensor dying no longer fires `battery_ok` (or `signal_ok`).
+- Entities that leave the monitored set are pruned. Previously one that left while offline stayed counted as offline.
+
 ## [0.5.3] - 2026-09-14
 
 ### Fixed
