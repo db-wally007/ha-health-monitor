@@ -46,7 +46,7 @@
  *   grid_options: {columns: full}   # required inside a sections-view grid
  */
 
-const VERSION = "3.21.1";
+const VERSION = "3.22.0";
 
 /* One colour per problem CATEGORY, used in every place that category is shown —
    chart line, chart fill, legend, row dot, status text, detail chart. A category
@@ -84,9 +84,13 @@ function statusOf(d, view) {
                         : { text: "OK", tone: COL.ok };
   // devices / helpers: availability only. Staleness belongs here — an entity
   // that stopped reporting is an availability problem, not a battery or radio one.
+  // An automation/script whose latest run failed is Failed — every failed run, at once.
+  if (d.failed) return { text: "Failed", tone: COL.bad };
   if (d.stale) return { text: "Not updating", tone: COL.stale };
   return { text: "OK", tone: COL.ok };
 }
+
+const isJob = (d) => /^(automation|script)\./.test(d.id);
 
 /* "Last seen" = when we last had EVIDENCE the row was alive, which is not the
    same as when its state last CHANGED. A light on for 10h and an Ecowitt whose
@@ -186,7 +190,7 @@ const areaLabel = (a) => (!a || a === "(No Area)" || a === "—" ? AREA_INTERNAL
    of plain facts rather than a row of zeros. */
 const STATS = [
   { id: "devices", bad: "Devices Offline", ok: "Devices Online", tone: COL.bad },
-  { id: "helpers", bad: "Helpers Unavailable", ok: "Helpers OK", tone: COL.bad },
+  { id: "helpers", bad: "Helper Problems", ok: "Helpers OK", tone: COL.bad },
   { id: "battery", bad: "Low Battery", ok: "Batteries OK",
     tone: COL.battery, needs: "battery_enabled" },
   { id: "signal", bad: "Weak Signal", ok: "Signals OK",
@@ -315,6 +319,7 @@ class HealthMonitorCard extends HTMLElement {
     const poor = setOf("poor_signal_entities");
     const stale = setOf("stale_entities");
     const okSig = setOf("ok_signal_entities");
+    const failed = setOf("failed_entities");
 
     const rows = (a.entities_collapsed || []).map((id) => {
       const members = (a.row_members || {})[id] || [id];
@@ -352,6 +357,8 @@ class HealthMonitorCard extends HTMLElement {
         lowBattery: members.some((m) => lowBat.has(m)),
         poorSignal: isPoor,
         stale: members.some((m) => stale.has(m)),
+        failed: members.some((m) => failed.has(m)),
+        run: pick(a.job_runs),
         battery, rssi, unit,
         quality: rssi === null ? null : isPoor ? "Poor" : isOk ? "OK" : "Good",
         lastSeen: pick(a.last_seen),
@@ -408,7 +415,8 @@ class HealthMonitorCard extends HTMLElement {
       if (r.offline) return 0;
       if (this._view === "battery") return r.lowBattery ? 1 : 4;
       if (this._view === "signal") return r.poorSignal ? 1 : 4;
-      return r.stale ? 1 : 4;
+      if (r.failed) return 1;
+      return r.stale ? 2 : 4;
     };
     const key = (r) => {
       switch (col) {
@@ -626,12 +634,16 @@ class HealthMonitorCard extends HTMLElement {
          healthy ones too answers a question nobody asked by tapping "1 Offline".
          At zero there is nothing to isolate, so the tab is left unfiltered
          rather than filtered down to an empty table. */
+      const badHelpers = this._data.rows.filter((r) => !isDevice(r) && (r.offline || r.failed));
       const bad = { devices: this._data.rows.filter((r) => isDevice(r) && r.offline).length,
-                    helpers: this._data.rows.filter((r) => !isDevice(r) && r.offline).length,
+                    helpers: badHelpers.length,
                     battery: this._data.lowBattery, signal: this._data.poorSignal }[id];
       if (bad > 0) {
         if (id === "signal") this._qualities.add("Poor");
         else if (id === "battery") this._statuses.add("Low battery");
+        // Helper problems come in two kinds; select exactly the ones present.
+        else if (id === "helpers")
+          for (const r of badHelpers) this._statuses.add(statusOf(r, "helpers").text);
         else this._statuses.add("Unavailable");
       }
       this._paintFilters();
@@ -715,6 +727,13 @@ class HealthMonitorCard extends HTMLElement {
     this._el.tbody.addEventListener("click", (e) => {
       const info = e.target.closest(".info");
       if (info) { e.stopPropagation(); this._openSettings(info.dataset.info); return; }
+      const nav = e.target.closest("[data-nav]");
+      if (nav) {
+        e.stopPropagation();
+        history.pushState(null, "", nav.dataset.nav);
+        this.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
+        return;
+      }
       const tag = e.target.closest(".tag[data-f]");
       if (tag) { e.stopPropagation(); this._toggleFilter(tag.dataset.f, tag.dataset.v); return; }
       const tr = e.target.closest(".tr");
@@ -895,7 +914,8 @@ class HealthMonitorCard extends HTMLElement {
     const withSignal = d.rows.filter((r) => r.rssi !== null);
     const pair = {
       devices: { bad: devices.filter((r) => r.offline).length, total: devices.length },
-      helpers: { bad: helpers.filter((r) => r.offline).length, total: helpers.length },
+      // A helper is a problem when it is down OR its latest run failed.
+      helpers: { bad: helpers.filter((r) => r.offline || r.failed).length, total: helpers.length },
       battery: { bad: withBattery.filter((r) => r.lowBattery).length, total: withBattery.length },
       signal: { bad: withSignal.filter((r) => r.poorSignal).length, total: withSignal.length },
     };
@@ -1012,7 +1032,7 @@ class HealthMonitorCard extends HTMLElement {
     }
 
     const sig = scope + this._page + "|" +
-      rows.map((r) => `${r.id}${r.offline}${r.lowBattery}${r.poorSignal}${r.battery}${r.rssi}`).join("|");
+      rows.map((r) => `${r.id}${r.offline}${r.lowBattery}${r.poorSignal}${r.battery}${r.rssi}${r.failed}`).join("|");
     if (sig === this._sig) return;
     this._sig = sig;
 
@@ -1393,7 +1413,7 @@ class HealthMonitorCard extends HTMLElement {
        jumps when the data lands. Must track the row metrics set in CSS. */
     const reserved = Math.max(1, ids.length) * (SHC_ROW_H + SHC_ROW_GAP) + 30;
 
-    box.innerHTML = `
+    box.innerHTML = `${this._runBlock(row)}
       <div class="dhead">Availability \u00b7 ${escapeHtml(row.name)}
         <span class="dsub">${ids.length} ${ids.length === 1 ? "entity" : "entities"}</span></div>
       <div class="shc" id="shc" style="min-height:${reserved}px"></div>
@@ -1401,6 +1421,37 @@ class HealthMonitorCard extends HTMLElement {
                : `<div class="loading">No state changes in this window.</div>`}`;
 
     this._mountHistory(box.querySelector("#shc"), row, ids, start, end);
+  }
+
+  /* The latest run of an automation or script, as the integration read it from HA's
+     traces: when it ran, whether it failed and why, and a jump to that run's trace.
+     Above the availability timeline because for a job it is the more direct answer. */
+  _runBlock(row) {
+    if (!isJob(row)) return "";
+    const st = this._hass?.states?.[row.id];
+    const ran = st?.attributes?.last_triggered;
+    const item = (tone, when, msg) =>
+      `<li><span class="logdot" style="--c:${tone}"></span>
+         <span class="lgt">${when}</span><span class="lgm">${msg}</span></li>`;
+    let items;
+    if (row.failed && row.run) {
+      items = item(COL.bad, ago(row.run.finished), "<b>Failed</b>") +
+        (row.run.error
+          ? `<li class="jobmsg" style="--c:${COL.bad}">${escapeHtml(row.run.error)}</li>` : "");
+    } else {
+      items = item(ran ? COL.ok : COL.stale, ran ? ago(ran) : "never",
+                   ran ? "<b>Finished</b> without errors" : "No run recorded");
+    }
+    // The failed run's own trace when there is one, else the item's trace list, which
+    // opens on its newest run.
+    let url = row.failed && row.run?.trace_url;
+    if (!url) {
+      const itemId = row.id.startsWith("automation.") ? st?.attributes?.id : row.id.split(".")[1];
+      if (itemId) url = `/config/${row.id.split(".")[0]}/trace/${itemId}`;
+    }
+    return `<div class="dhead">Last run
+        ${url ? `<button class="navbtn" data-nav="${escapeHtml(url)}">Open trace</button>` : ""}</div>
+      <ul class="log">${items}</ul>`;
   }
 
   async _mountHistory(host, row, ids, start, end) {
@@ -1719,11 +1770,11 @@ ha-card{
   {font-size:var(--fs-title);font-weight:700;letter-spacing:-.3px;color:var(--txt)}
 
 .t-body,
-.nmt b, .st, .bv, .vw, .rg, .clear, .msbtn, .msopt, .more, .search input
+.nmt b, .st, .bv, .vw, .rg, .clear, .msbtn, .msopt, .more, .search input, .navbtn
   {font-size:var(--fs-body);font-weight:600;color:var(--txt)}
 
 .t-meta,
-.nmt i, .muted, .tag, .mscount, .msact, .dsub, .lgt, .lgm, .loading, .none,
+.nmt i, .muted, .tag, .mscount, .msact, .dsub, .lgt, .lgm, .loading, .none, .jobmsg,
 .tfoot, .summary, .legend span, .dstats span
   {font-size:var(--fs-meta);font-weight:500;color:var(--txt2)}
 
@@ -2018,6 +2069,15 @@ ha-card{
 .lgt{font-family:var(--mono);font-size:var(--fs-meta);font-weight:500;color:var(--txt2);flex:0 0 auto}
 .lgm{font-size:var(--fs-meta);font-weight:500;color:var(--txt);
      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* last-run block: the error text of a failed run, and the jump to its trace */
+.log li.jobmsg{display:block;font-family:var(--mono);color:var(--c);white-space:pre-wrap;
+               word-break:break-word;padding:0 0 8px 19px;min-height:0}
+.navbtn{appearance:none;font-family:inherit;margin-left:auto;cursor:pointer;
+        min-height:var(--tap);padding:0 18px;border-radius:11px;background:transparent;
+        border:1px solid var(--line);color:var(--txt2);
+        transition:color .26s ${IOS},border-color .26s ${IOS}}
+.navbtn:active{transform:scale(.96);transition:transform .12s ${IOS_SOFT}}
+.navbtn:hover{color:var(--txt);border-color:rgba(255,255,255,.24)}
 /* pager */
 .pager{display:flex;align-items:center;justify-content:center;gap:18px;
        padding:14px var(--pad) 4px}

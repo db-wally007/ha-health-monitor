@@ -37,6 +37,16 @@ Licensed **GPL-3.0**, same as upstream, with the original copyright intact.
   out of backups.
 - Battery readings follow Home Assistant exactly — no retained values once a
   source sensor goes unavailable.
+- [Failed runs](#failed-runs-fork): every monitored automation and script is marked
+  *Failed* when its latest run fails, read from Home Assistant's own traces. There's
+  nothing to configure.
+- **Silent Bluetooth devices go offline.** A Bluetooth device not heard for 15 minutes
+  is marked offline, and its "offline since" time is when it was last heard. Home
+  Assistant applies the same 15 minutes itself, but skips devices that flag themselves
+  "sleepy" (they send only on change). Shelly BLU door/window and H&T sensors set that
+  flag even with periodic beacons enabled, so a dead one would otherwise keep showing
+  its last state forever. This relies on the device beaconing more often than every 15
+  minutes. A device that truly sends only on change will read as offline.
 - A companion console card, [`health-monitor-card/`](./health-monitor-card/README.md):
   a sortable, filterable table of every monitored device and helper, with history
   per row. It is a separate dashboard resource from the integration's own card.
@@ -590,6 +600,8 @@ The integration fires events on the Home Assistant event bus when a monitored en
 | `entity_availability_stale_recovered` | A stale essential entity resumes reporting *(individual groups only)* | `entity_id`, `group`, `entry_id`, `stale_since`, `stale_count`, `stale_entities` |
 | `entity_availability_poor_signal` | An entity's signal drops to poor quality *(individual groups only)* | `entity_id`, `group`, `entry_id`, `signal_level`, `signal_quality`, `poor_signal_count`, `poor_signal_entities` |
 | `entity_availability_signal_ok` | An entity's signal recovers from poor quality *(individual groups only)* | `entity_id`, `group`, `entry_id`, `signal_level`, `signal_quality`, `poor_signal_count`, `poor_signal_entities` |
+| `entity_availability_job_failed` | A monitored automation or script finished a run with an error *(fork, individual groups only)* | `entity_id`, `group`, `entry_id`, `run_id`, `finished`, `execution`, `error`, `trace_url`, `failed_count`, `failed_entities` |
+| `entity_availability_job_recovered` | A failed automation or script finishes a run without an error | same as `job_failed` |
 
 `offline_count` and `offline_entities` reflect the group's offline state at the moment of the event. For `entity_availability_offline` the newly-offline entity is included; for `entity_availability_recovered` it is already excluded. The same snapshot rule applies to all paired events (`low_battery`/`battery_ok`, `stale`/`stale_recovered`, `poor_signal`/`signal_ok`). `offline_since` is always set for individual group events; for combined groups it may be `null` — guard with `if trigger.event.data.offline_since` before using `as_datetime()`.
 
@@ -618,6 +630,35 @@ automation:
             {{ trigger.event.data.entity_id }} in
             {{ trigger.event.data.group }} went offline.
 ```
+
+---
+
+## Failed runs (fork)
+
+Every monitored automation and script is checked for failed runs. This works the same
+way for every job and needs no configuration or changes to the jobs themselves. The
+outcome of each run whose actions executed is read from Home Assistant's own trace
+store:
+- **Failed**: an error, a `stop: … error: true`, or recursion that HA blocked. The
+  job is marked Failed the moment such a run ends.
+- **Not a failure**: a condition step ending the run, a restart-mode cancel, a trigger
+  turned away while the job was running, or a trigger whose conditions weren't met.
+
+A later run that finishes cleanly clears the failure. Deciding what deserves an alert
+(for example, several failures in a row) belongs to alerting, not here.
+
+HA keeps only a few traces per item, so the integration keeps the last real outcome
+itself. It also reloads HA's saved traces at startup, so a failure from just before a
+restart is not lost.
+
+A service call that targets an unavailable entity is **not** a failed run. Home
+Assistant skips that entity silently and the run finishes normally. That case shows up
+as the device being unavailable.
+
+The summary sensor carries `failed` (recorded), plus `failed_entities` and `job_runs`
+(the last run per job, with its error and trace URL), which are not recorded. The trace
+store is a Home Assistant internal, not a public API. If a future HA release changes
+it, run results go blank; nothing else is affected.
 
 ---
 

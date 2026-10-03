@@ -1103,6 +1103,8 @@ class GroupSummarySensor(DedupCoordinatorSensor):
             "platforms",
             "areas",
             "device_ids",
+            "failed_entities",
+            "job_runs",
         }
     )
 
@@ -1241,6 +1243,7 @@ class GroupSummarySensor(DedupCoordinatorSensor):
                 and not d.is_offline
             )
         )
+        failed_ids = coord._failed_entity_ids()
         return {
             "entry_id": self.coordinator.entry.entry_id,
             "total_entities": total,
@@ -1338,6 +1341,13 @@ class GroupSummarySensor(DedupCoordinatorSensor):
             },
             "stale_entities": stale_ids,
             "stale_entities_non_essential": stale_ne_ids,
+            # Failed runs of automations/scripts (jobs.py). The count is recorded; the
+            # list and the per-job last run (result, error, trace link) are not.
+            "failed": len(failed_ids),
+            "failed_entities": failed_ids,
+            "job_runs": {
+                eid: d.last_run for eid, d in states.items() if d.last_run is not None
+            },
             "offline_since": {
                 eid: d.offline_since.isoformat()
                 for eid, d in states.items()

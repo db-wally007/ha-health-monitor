@@ -22,7 +22,7 @@ table therefore costs one state subscription, however many devices are monitored
 
 1. Copy `health-monitor-card.js` to `config/www/health-monitor-card/`.
 2. Add it as a dashboard resource (**Settings → Dashboards → ⋮ → Resources**):
-   `/local/health-monitor-card/health-monitor-card.js?v=3.21.1`, type
+   `/local/health-monitor-card/health-monitor-card.js?v=3.22.0`, type
    *JavaScript module*. Raise the `?v=` after every update. Browsers keep the
    old module otherwise, even after a hard reload.
 
@@ -39,8 +39,8 @@ grid_options:
 
 ## What it shows
 
-- **Summary tiles.** Devices offline, helpers unavailable, low battery and weak
-  signal, each as bad/total. A tile reads as the good state ("Devices Online")
+- **Summary tiles.** Devices offline, helper problems (unavailable or failed), low
+  battery and weak signal, each as bad/total. A tile reads as the good state ("Devices Online")
   when nothing is wrong, and hides when the group does not measure that check.
   Tapping a tile filters the table to exactly those rows and scrolls to it.
 - **Problem history chart.** Counts over time from the recorder, as grouped bars
@@ -59,6 +59,9 @@ grid_options:
   twice, for example `opensprinkler` and `_opensprinkler`.
 - **Last seen** is `now` for anything available, the time it went offline for
   anything unavailable, and `last_triggered` for automations and scripts.
+- **Failed runs.** An automation or script whose latest run failed reads *Failed*, and
+  the Helpers tile counts it ("Helper Problems"). Expanded, it shows its last run: the
+  error, and an **Open trace** button that lands on that run.
 - **Expanded row.** *Devices* and *Helpers* show an availability timeline for
   every member entity (red = unavailable/unknown, green = anything else) and the
   logbook. *Battery* and *Signal* chart the bound battery or RSSI sensor as a

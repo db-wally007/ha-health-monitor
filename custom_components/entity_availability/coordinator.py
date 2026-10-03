@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,6 +25,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     BATTERY_HYSTERESIS,
+    BLE_SILENT_AFTER,
     CONF_BAD_STATES,
     CONF_BATTERY_ENTITY_MAP,
     CONF_BATTERY_THRESHOLD,
@@ -52,6 +54,8 @@ from .const import (
     DEFAULT_STALENESS_USE_LAST_UPDATED,
     DEFAULT_USE_DEVICE_NAMES,
     EVENT_BATTERY_OK,
+    EVENT_JOB_FAILED,
+    EVENT_JOB_RECOVERED,
     EVENT_LOW_BATTERY,
     EVENT_OFFLINE,
     EVENT_POOR_SIGNAL,
@@ -59,6 +63,7 @@ from .const import (
     EVENT_SIGNAL_OK,
     EVENT_STALE,
     EVENT_STALE_RECOVERED,
+    JOB_DOMAINS,
     PLATFORM_SIGNAL_TYPES,
     SCAN_INTERVAL,
     SIGNAL_HYSTERESIS,
@@ -70,7 +75,7 @@ from .const import (
     STORAGE_VERSION,
     SignalQuality,
 )
-from . import discovery
+from . import discovery, jobs
 from .helpers import collapse_representatives
 from .models import DeviceState, EntityAvailabilityData
 from .storage import AvailabilityStorage
@@ -210,6 +215,11 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         # Without it the check is O(entities-per-device) per entity per tick; with it,
         # one registry walk per device per tick. Cleared alongside _collapse_map.
         self._live_sibling_memo: dict[str, bool] = {}
+        # Bluetooth silence (see _ble_silent_since). last_heard is kept across ticks
+        # because HA drops a device's advertisement history once it has gone stale —
+        # exactly when we still need to know when it was last heard.
+        self._ble_last_heard: dict[str, datetime] = {}
+        self._ble_memo: dict[str, datetime | None] = {}
         self._unsub_registry: list[CALLBACK_TYPE] = []
         self._registry_debounce: CALLBACK_TYPE | None = None
         self._availability_storage = AvailabilityStorage()
@@ -374,6 +384,52 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
 
         self._live_sibling_memo[entry.device_id] = alive
         return alive
+
+    def _ble_silent_since(self, entity_id: str, now: datetime) -> datetime | None:
+        """When a Bluetooth device was last heard, if that is longer ago than allowed.
+
+        Home Assistant marks a silent Bluetooth device unavailable after 15 minutes —
+        unless the device flags itself "sleepy" (sends only on change). Shelly BLU
+        door/window and H&T sensors set that flag even with periodic beacons on, so a
+        dead one keeps its last state forever. This asks HA's Bluetooth stack when the
+        device was last heard instead, and applies one rule to every Bluetooth device:
+        not heard for BLE_SILENT_AFTER seconds means offline. Returns None for devices
+        that are not Bluetooth or were heard recently.
+        """
+        entry = er.async_get(self.hass).async_get(entity_id)
+        if entry is None or not entry.device_id:
+            return None
+        if entry.device_id in self._ble_memo:
+            return self._ble_memo[entry.device_id]
+
+        silent_since = None
+        device = dr.async_get(self.hass).async_get(entry.device_id)
+        mac = next(
+            (
+                value
+                for kind, value in (device.connections if device else ())
+                if kind == dr.CONNECTION_BLUETOOTH
+            ),
+            None,
+        )
+        if mac and "bluetooth" in self.hass.config.components:
+            from homeassistant.components import bluetooth
+
+            info = bluetooth.async_last_service_info(self.hass, mac, connectable=False)
+            if info is not None:
+                # service_info.time is on the monotonic clock.
+                heard = now - timedelta(seconds=max(0.0, time.monotonic() - info.time))
+                previous = self._ble_last_heard.get(mac)
+                if previous is None or heard > previous:
+                    self._ble_last_heard[mac] = heard
+            # Not heard at all since HA started: count from startup, so a device that
+            # died while HA was down is caught too.
+            heard = self._ble_last_heard.get(mac) or self._startup_time
+            if heard is not None and (now - heard).total_seconds() > BLE_SILENT_AFTER:
+                silent_since = heard
+
+        self._ble_memo[entry.device_id] = silent_since
+        return silent_since
 
     @callback
     def _setup_registry_listeners(self) -> None:
@@ -577,6 +633,9 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
             self._entities,
         )
         await self._async_load_storage()
+        # HA only reloads its saved traces when someone opens one in the UI; without
+        # this a run that failed just before a restart would be invisible.
+        await jobs.async_restore(self.hass)
         # A stored file can carry entities that are no longer in the set — the rules
         # changed, or an exclusion was added, while this entry was not running. Sweep
         # them here as well as on live re-resolve, or their buckets are loaded and
@@ -731,6 +790,11 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                     device.total_offline_seconds = ds.get("total_offline_seconds", 0.0)
                     device.battery_level = ds.get("battery_level")
                     device.is_low_battery = ds.get("is_low_battery", False)
+                    # Restored so a job that was already failing does not announce
+                    # its failure again after every restart.
+                    last_run = ds.get("last_run")
+                    device.last_run = last_run if isinstance(last_run, dict) else None
+                    device.is_failed = ds.get("is_failed", False)
                     if entity_id in self._entities:
                         self._device_states[entity_id] = device
 
@@ -752,6 +816,7 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                 or device.monitored_since is not None
                 or device.is_low_battery
                 or device.last_changed is not None
+                or device.last_run is not None
             ):
                 device_states_data[entity_id] = {
                     "is_offline": device.is_offline,
@@ -774,6 +839,8 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                     "last_changed": device.last_changed.isoformat()
                     if device.last_changed
                     else None,
+                    "last_run": device.last_run,
+                    "is_failed": device.is_failed,
                 }
         data = {
             "availability": self._availability_storage.to_dict(),
@@ -918,6 +985,7 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         # Same lifetime: sibling liveness is read from the state machine, which moves
         # between ticks. Stale entries would freeze a device's offline verdict.
         self._live_sibling_memo = {}
+        self._ble_memo = {}
 
         # Cap elapsed to avoid huge jumps after HA restart or sleep
         # Maximum reasonable elapsed is 2x the scan interval
@@ -1016,6 +1084,13 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                 and self._device_has_live_sibling(entity_id)
             ):
                 is_bad = False
+
+            # A Bluetooth device that has gone silent is down even though HA still shows
+            # its last state (see _ble_silent_since). This is a device-level fact, so it
+            # overrides the live-sibling rule above: its siblings are silent too.
+            silent_since = self._ble_silent_since(entity_id, now)
+            if silent_since is not None:
+                is_bad = True
 
             # Battery follows Home Assistant, with no retention.
             #
@@ -1118,7 +1193,9 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                     _lc = state.last_changed if state and state.last_changed else None
                     if _lc is not None and _lc.tzinfo is None:
                         _lc = _lc.replace(tzinfo=timezone.utc)
-                    device.cooldown_start = (
+                    # A silent Bluetooth device went down when it was last heard, not
+                    # when its (frozen) state last changed.
+                    device.cooldown_start = silent_since or (
                         _lc if _lc is not None and _lc < now else now
                     )
                     _LOGGER.debug(
@@ -1290,7 +1367,13 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                     )
             else:
                 device.is_low_battery = battery_low
-            device.is_degraded = (not device.is_offline) and (battery_low or is_stale)
+
+            if entity_id.split(".", 1)[0] in JOB_DOMAINS:
+                self._check_run(entity_id, device, pending_events)
+
+            device.is_degraded = (not device.is_offline) and (
+                battery_low or is_stale or device.is_failed
+            )
 
             # Signal quality transition events
             if self._signal_enabled:
@@ -1358,6 +1441,8 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
             category_ids["low_battery"] = self._low_battery_entity_ids()
         if "poor_signal" in touched:
             category_ids["poor_signal"] = self._poor_signal_entity_ids()
+        if "failed" in touched:
+            category_ids["failed"] = self._failed_entity_ids()
         for _event_name, payload, cat in pending_events:
             ids = category_ids[cat]
             payload[f"{cat}_count"] = len(ids)
@@ -1514,6 +1599,44 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         """Return stale, non-suppressed, essential entity_ids (device-collapsed when active)."""
         return self._representatives_matching(
             lambda d: d.is_stale and not d.is_suppressed and not d.is_non_essential
+        )
+
+    def _failed_entity_ids(self) -> list[str]:
+        """Return automations/scripts whose last run failed (not suppressed, essential)."""
+        return self._representatives_matching(
+            lambda d: d.is_failed and not d.is_suppressed and not d.is_non_essential
+        )
+
+    def _check_run(
+        self,
+        entity_id: str,
+        device: DeviceState,
+        pending_events: list[tuple[str, dict, str]],
+    ) -> None:
+        """Record the latest executed run of an automation/script; queue a transition.
+
+        Every failed run marks the job Failed at once; the next run that ends without
+        an error clears it. Deciding what deserves an alert is the alerting layer's job.
+        """
+        run = jobs.latest_run(self.hass, entity_id)
+        if jobs.is_newer(run, device.last_run):
+            device.last_run = run
+            self._dirty = True
+        failed = bool(device.last_run and device.last_run.get("failed"))
+        if failed == device.is_failed:
+            return
+        device.is_failed = failed
+        pending_events.append(
+            (
+                EVENT_JOB_FAILED if failed else EVENT_JOB_RECOVERED,
+                {
+                    "entity_id": entity_id,
+                    "group": self.group_name,
+                    "entry_id": self.entry.entry_id,
+                    **(device.last_run or {}),
+                },
+                "failed",
+            )
         )
 
     def _get_battery_level(self, entity_id: str) -> int | None:

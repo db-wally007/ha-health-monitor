@@ -42,6 +42,11 @@ class DeviceState:
     monitored_since: datetime | None = None
     offline_event_count: int = 0
     total_offline_seconds: float = 0.0
+    # Run outcome of an automation/script: the newest EXECUTED run as read from HA's
+    # traces (see jobs.latest_run). Kept here and persisted because HA keeps only a
+    # handful of traces per item and condition-failed triggers evict them.
+    last_run: dict | None = None
+    is_failed: bool = False
 
 
 @dataclass

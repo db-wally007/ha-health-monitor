@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3+hm.3] - 2026-10-03
+
+### Added
+- **Failed runs:** every monitored automation and script is marked Failed when its
+  latest run ends in an error, read from Home Assistant's own traces. That covers an
+  exception, `stop … error: true` and blocked recursion; condition stops and skipped
+  triggers don't count. A clean run clears it. There's nothing to configure. New
+  events `entity_availability_job_failed` / `_job_recovered`; new summary attributes
+  `failed`, `failed_entities` and `job_runs`.
+- **Silent Bluetooth devices go offline:** a Bluetooth device not heard for 15
+  minutes is marked offline, whatever its "sleepy" flag says. Home Assistant never
+  marks sleepy BTHome devices unavailable, and Shelly BLU door/window and H&T sensors
+  set that flag even with periodic beacons enabled.
+- **health-monitor-card v3.22.0:** the Helpers tile counts failed runs ("Helper Problems") and
+  rows read *Failed*. An expanded automation or script shows its last run: the result,
+  the error, and **Open trace**, which lands on that run.
+
 ## [0.5.3+hm.2] - 2026-09-27
 
 First release of this fork. Everything below is relative to upstream 0.5.3.

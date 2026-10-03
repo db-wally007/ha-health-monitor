@@ -53,6 +53,17 @@ CONF_SIGNAL_AUTO = "signal_auto"
 CONF_OFFLINE_REQUIRES_ALL = "offline_requires_all"
 DEFAULT_OFFLINE_REQUIRES_ALL = True
 
+# A Bluetooth device not heard for this long is offline — the same 15 minutes Home
+# Assistant itself uses (FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS). Needed because
+# HA skips that check for devices that flag themselves "sleepy" (send only on change),
+# which Shelly BLU door/window and H&T sensors do even with periodic beacons enabled —
+# without this they keep showing their last state forever once dead.
+BLE_SILENT_AFTER = 15 * 60  # seconds
+
+# Automations and scripts are also checked for FAILED RUNS, read from Home Assistant's
+# own traces (jobs.py) — automatic, no configuration, same rule for every one.
+JOB_DOMAINS = ("automation", "script")
+
 # Entities whose state is an action or an announcement, not a condition. A button is
 # "unknown" until first pressed; an event entity until first fired. Treating either as
 # unavailable manufactures permanent false positives.
@@ -236,6 +247,8 @@ EVENT_STALE = "entity_availability_stale"
 EVENT_STALE_RECOVERED = "entity_availability_stale_recovered"
 EVENT_POOR_SIGNAL = "entity_availability_poor_signal"
 EVENT_SIGNAL_OK = "entity_availability_signal_ok"
+EVENT_JOB_FAILED = "entity_availability_job_failed"
+EVENT_JOB_RECOVERED = "entity_availability_job_recovered"
 
 # Sentinel area name for entities with no HA area assigned.
 # Parentheses signal "not a real area" and avoid colliding with user-created area names.
