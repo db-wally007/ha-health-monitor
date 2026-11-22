@@ -424,7 +424,6 @@ class DegradedDevicesSensor(DedupCoordinatorSensor):
                 lambda d: (
                     d.is_low_battery
                     and not d.is_suppressed
-                    and not d.is_offline
                     and not d.is_non_essential
                 )
             )
@@ -439,7 +438,6 @@ class DegradedDevicesSensor(DedupCoordinatorSensor):
             lambda d: (
                 d.is_low_battery
                 and not d.is_suppressed
-                and not d.is_offline
                 and not d.is_non_essential
             )
         ):
@@ -831,19 +829,25 @@ class LowBatteryCountSensor(DedupCoordinatorSensor):
         self._attr_translation_key = "low_battery_count"
         self._attr_device_info = _device_info(entry_id, group_slug, group_name)
 
+    def _matching(self) -> list:
+        return self.coordinator.representative_states_matching(
+            lambda d: (
+                d.is_low_battery
+                and not d.is_suppressed
+                and not d.is_non_essential
+            )
+        )
+
     @property
     def native_value(self) -> int:
         """Return count of devices with low battery."""
-        return len(
-            self.coordinator.representative_states_matching(
-                lambda d: (
-                    d.is_low_battery
-                    and not d.is_suppressed
-                    and not d.is_offline
-                    and not d.is_non_essential
-                )
-            )
-        )
+        return len(self._matching())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """WHICH devices make up the count. Recorded on purpose: the card's problem
+        chart names the devices behind each bar from this sensor's history."""
+        return {"devices": sorted(d.entity_id for d in self._matching())}
 
 
 class AvailabilitySensor(DedupCoordinatorSensor):
@@ -1064,6 +1068,10 @@ class MTTRSensor(DedupCoordinatorSensor):
 class GroupSummarySensor(DedupCoordinatorSensor):
     """Sensor showing total entity count with detailed breakdown in attributes."""
 
+    # hm: an ignore's end changing on its own (another length) must reach the cards; so must
+    # one device going silent while another comes back (the recorded count stays the same)
+    _ea_dedup_keep = frozenset({"suppressed_until", "stale_entities", "stale_since"})
+
     _attr_icon = "mdi:format-list-group"
     # No state_class: entity count only changes on group edit, so long-term
     # statistics would be constant rows sampled every 5 min. Stays a valid state sensor.
@@ -1089,6 +1097,7 @@ class GroupSummarySensor(DedupCoordinatorSensor):
             "entities",
             "offline_entities",
             "offline_since",
+            "stale_since",
             "suppressed_until",
             "stale_entities",
             "stale_entities_non_essential",
@@ -1196,11 +1205,14 @@ class GroupSummarySensor(DedupCoordinatorSensor):
                 _match(lambda d: d.battery_level is not None and not d.is_suppressed)
             )
 
+        # hm: an offline device stays low battery - a dying battery is what takes most
+        # battery devices offline, and its low-battery alert must not resolve because of it.
+        # The level is still Home Assistant's own (no retention): a battery sensor that HA
+        # itself shows unavailable has no level, so it is not low.
         low_battery_entities = _match(
             lambda d: (
                 d.is_low_battery
                 and not d.is_suppressed
-                and not d.is_offline
                 and not d.is_non_essential
             )
         )
@@ -1352,6 +1364,12 @@ class GroupSummarySensor(DedupCoordinatorSensor):
                 eid: d.offline_since.isoformat()
                 for eid, d in states.items()
                 if d.offline_since is not None
+            },
+            # hm: when the device of each Not updating entity was last heard
+            "stale_since": {
+                eid: d.stale_since.isoformat()
+                for eid, d in states.items()
+                if d.is_stale and d.stale_since is not None
             },
             "last_seen": {
                 # DeviceState only tracks `last_changed` (the coordinator reads
@@ -1817,6 +1835,12 @@ class PoorSignalCountSensor(DedupCoordinatorSensor):
     @property
     def native_value(self) -> int:
         return len(self.coordinator._poor_signal_entity_ids())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """WHICH devices make up the count. Recorded on purpose: the card's problem
+        chart names the devices behind each bar from this sensor's history."""
+        return {"devices": sorted(self.coordinator._poor_signal_entity_ids())}
 
 
 class NonEssentialPoorSignalSensor(DedupCoordinatorSensor):

@@ -22,6 +22,8 @@ class DeviceState:
     is_non_essential: bool = False
     suppress_until: datetime | None = None
     offline_since: datetime | None = None
+    # hm: when its device was last heard, while it is Not updating (see _device_last_activity)
+    stale_since: datetime | None = None
     last_recovery: datetime | None = None
     last_downtime_seconds: float | None = None
     cooldown_start: datetime | None = None

@@ -4,10 +4,11 @@ suppress:
   fields:
     entity_id:
       name: Entity
-      description: The entity ID to suppress. Optional if group is provided.
+      description: The entity or entities to suppress (all of a device's, to ignore the device). Optional if group is provided.
       required: false
       selector:
         entity:
+          multiple: true
     group:
       name: Group
       description: The group to suppress. When provided without entity_id, all entities in the group are suppressed.
@@ -32,10 +33,11 @@ suppress_indefinitely:
   fields:
     entity_id:
       name: Entity
-      description: The entity ID to suppress. Optional if group is provided.
+      description: The entity or entities to suppress (all of a device's, to ignore the device). Optional if group is provided.
       required: false
       selector:
         entity:
+          multiple: true
     group:
       name: Group
       description: The group to suppress. When provided without entity_id, all entities in the group are suppressed.
@@ -50,10 +52,11 @@ unsuppress:
   fields:
     entity_id:
       name: Entity
-      description: The entity ID to unsuppress. Optional if group is provided.
+      description: The entity or entities to unsuppress. Optional if group is provided.
       required: false
       selector:
         entity:
+          multiple: true
     group:
       name: Group
       description: The group to unsuppress. When provided without entity_id, all entities in the group are unsuppressed.

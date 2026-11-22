@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -76,6 +77,7 @@ from .const import (
     SignalQuality,
 )
 from . import discovery, jobs
+from .failures import note_run
 from .helpers import collapse_representatives
 from .models import DeviceState, EntityAvailabilityData
 from .storage import AvailabilityStorage
@@ -95,6 +97,14 @@ _REGISTRY_DEBOUNCE = 5  # seconds
 
 # Save storage every N updates (5 min = 10 updates at 30s interval)
 _SAVE_INTERVAL_UPDATES = 10
+
+
+# One writer at a time. Every save goes through the same ``<key>.json.tmp``, and a
+# reload (options change) runs the old coordinator's final save while a periodic save
+# of the same file can still be in the executor - or the new coordinator's store, which
+# is a different object, can write it. Two writers renaming one temp file leave the
+# second with FileNotFoundError, so the lock is module-wide, not per store.
+_SAVE_LOCK = threading.Lock()
 
 
 class _CacheStore:
@@ -150,11 +160,12 @@ class _CacheStore:
     def _save(self, data: dict) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"version": self.version, "key": self.key, "data": data}, handle
-            )
-        os.replace(tmp, self.path)
+        with _SAVE_LOCK:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"version": self.version, "key": self.key, "data": data}, handle
+                )
+            os.replace(tmp, self.path)
 
 
 class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData]):
@@ -215,6 +226,8 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         # Without it the check is O(entities-per-device) per entity per tick; with it,
         # one registry walk per device per tick. Cleared alongside _collapse_map.
         self._live_sibling_memo: dict[str, bool] = {}
+        # hm: per-tick memo of each device's last activity (see _device_last_activity)
+        self._activity_memo: dict[str, datetime | None] = {}
         # Bluetooth silence (see _ble_silent_since). last_heard is kept across ticks
         # because HA drops a device's advertisement history once it has gone stale —
         # exactly when we still need to know when it was last heard.
@@ -384,6 +397,59 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
 
         self._live_sibling_memo[entry.device_id] = alive
         return alive
+
+    def _device_last_activity(self, entity_id: str) -> datetime | None:
+        """hm: when the entity's DEVICE last changed anything - what "Not updating" judges.
+
+        One entity sitting still for days is normal (a closed window, a light that is off);
+        a device is Not updating only once NONE of its entities - diagnostic signal and
+        beacon sensors included - has changed for the staleness threshold. And only a
+        device that reports on its own is judged: one with a signal sensor, or a measuring
+        sensor other than its battery. A Hue wall switch or a one-way Somfy cover sends
+        nothing until it is used, so its silence proves nothing.
+
+        None: not judged - no device, nothing that reports on its own, or no entity with a
+        real state (that device is unavailable, not Not updating). Home Assistant's own
+        last_changed (last_updated when configured), which starts again at a restart.
+        """
+        ent_reg = er.async_get(self.hass)
+        entry = ent_reg.async_get(entity_id)
+        if not entry or not entry.device_id:
+            return None
+        if entry.device_id in self._activity_memo:
+            return self._activity_memo[entry.device_id]
+        latest: datetime | None = None
+        reports = False
+        for ent in er.async_entries_for_device(
+            ent_reg, entry.device_id, include_disabled_entities=False
+        ):
+            # stateless triggers: their state says nothing about the device
+            if ent.entity_id.startswith("button."):
+                continue
+            state = self.hass.states.get(ent.entity_id)
+            if state is None or state.state in self._bad_states:
+                continue
+            dc = (
+                ent.device_class
+                or ent.original_device_class
+                or state.attributes.get("device_class")
+            )
+            if dc == SensorDeviceClass.SIGNAL_STRENGTH or (
+                ent.entity_id.startswith("sensor.")
+                and state.attributes.get("state_class") == "measurement"
+                and dc != SensorDeviceClass.BATTERY
+            ):
+                reports = True
+            ts = (
+                state.last_updated
+                if self._staleness_use_last_updated
+                else state.last_changed
+            )
+            if ts is not None and (latest is None or ts > latest):
+                latest = ts
+        result = latest if reports else None
+        self._activity_memo[entry.device_id] = result
+        return result
 
     def _ble_silent_since(self, entity_id: str, now: datetime) -> datetime | None:
         """When a Bluetooth device was last heard, if that is longer ago than allowed.
@@ -676,7 +742,16 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         # Final save
         if self._dirty:
             _LOGGER.debug("[%s] Saving dirty storage on shutdown", self.group_name)
-            await self._async_save_storage()
+            try:
+                await self._async_save_storage()
+            except Exception:  # noqa: BLE001
+                # Same as the periodic save: a failed write costs a few minutes of
+                # history. Raised here it would only die as an unretrieved task
+                # exception and fire the global-exception alert.
+                _LOGGER.warning(
+                    "[%s] Failed to save storage on shutdown", self.group_name,
+                    exc_info=True,
+                )
 
     async def _async_load_storage(self) -> None:
         """Load persisted availability data."""
@@ -985,6 +1060,7 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         # Same lifetime: sibling liveness is read from the state machine, which moves
         # between ticks. Stale entries would freeze a device's offline verdict.
         self._live_sibling_memo = {}
+        self._activity_memo = {}  # hm
         self._ble_memo = {}
 
         # Cap elapsed to avoid huge jumps after HA restart or sleep
@@ -1157,13 +1233,9 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
             is_stale = False
             stale_ts = None
             if self._staleness_threshold > 0 and state:
-                # last_updated advances on same-value writes that never fire
-                # state_changed, so read directly from HA state each poll.
-                stale_ts = (
-                    state.last_updated
-                    if self._staleness_use_last_updated
-                    else device.last_changed
-                )
+                # hm: the whole device's last activity, not this one entity's - see
+                # _device_last_activity (None: this device is not judged)
+                stale_ts = self._device_last_activity(entity_id)
                 if stale_ts:  # pragma: no branch
                     if stale_ts.tzinfo is None:  # pragma: no cover
                         stale_ts = stale_ts.replace(tzinfo=timezone.utc)
@@ -1300,6 +1372,8 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
                 self._availability_storage.record_offline(entity_id, elapsed, now)
 
             # Degraded = not offline but battery low or stale
+            # hm: when its device was last heard, for "Not updating for X" (summary stale_since)
+            device.stale_since = stale_ts if is_stale else None
             if is_stale and not device.is_stale:
                 device.is_stale = True
                 pending_events.append(
@@ -1622,6 +1696,8 @@ class EntityAvailabilityCoordinator(DataUpdateCoordinator[EntityAvailabilityData
         if jobs.is_newer(run, device.last_run):
             device.last_run = run
             self._dirty = True
+            # hm: when it was failing, for the card's history (failures.py)
+            note_run(self.hass, entity_id, run)
         failed = bool(device.last_run and device.last_run.get("failed"))
         if failed == device.is_failed:
             return

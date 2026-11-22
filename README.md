@@ -47,6 +47,22 @@ Licensed **GPL-3.0**, same as upstream, with the original copyright intact.
   flag even with periodic beacons enabled, so a dead one would otherwise keep showing
   its last state forever. This relies on the device beaconing more often than every 15
   minutes. A device that truly sends only on change will read as offline.
+- **Restarts, recorded once.** While Home Assistant restarts, dozens of entities read
+  "unavailable" or "unknown" for a minute; the integration ignores that (the 60 s
+  startup grace and the cooldown), but the recorder keeps it. The integration notes
+  each restart - when Home Assistant began stopping, booted and was running again -
+  for 10 days, filling in older ones from the recorder's own record of its runs, and
+  serves them with each group's cooldown over the websocket
+  (`{"type": "entity_availability/restarts"}`). The card uses them to tell a restart
+  from a real drop-out.
+- **Ignore, with its story.** `suppress`, `suppress_indefinitely` and `unsuppress`
+  take a list of entities, so a whole device is set aside (or let go) at once, with
+  one refresh. Every ignore set or stopped is logged for 10 days - which entities,
+  until when, and who did it - and served over the websocket
+  (`{"type": "entity_availability/ignores"}`). An ignore that runs out by itself is
+  not logged: its "until" says when it ended. Admins can drop entities from the log
+  (`{"type": "entity_availability/ignores/forget", "entity_ids": [...]}`), e.g. after
+  a test. The card calls this *Ignore*.
 - A companion console card, [`health-monitor-card/`](./health-monitor-card/README.md):
   a sortable, filterable table of every monitored device and helper, with history
   per row. It is a separate dashboard resource from the integration's own card.
@@ -132,7 +148,7 @@ Choose whether to monitor a group of entities or combine existing groups.
 |-------|---------|-------------|
 | States considered offline | `unavailable`, `unknown` | States that mark an entity as offline |
 | Cooldown (seconds) | `60` | Time to wait before confirming an entity is offline |
-| Staleness threshold (minutes) | `0` (disabled) | Mark entity degraded if no state change in this time |
+| Staleness threshold (minutes) | `0` (disabled) | Mark entity degraded if no state change in this time. **Fork (hm):** judged per DEVICE - an entity is Not updating only once none of its device's entities (diagnostic signal sensors included, buttons aside) has changed for this long, and only on a device that reports on its own (a signal sensor, or a measuring sensor other than its battery). One entity sitting still is normal (a closed window, a light that is off); a Hue wall switch or a one-way cover sends nothing until used. Entities without a device are never Not updating. The summary publishes `stale_since` (when each one's device was last heard). |
 | Count attribute updates as activity | `off` | When off, staleness uses `last_changed` (only main-state changes reset the timer). When on, it uses `last_updated`, so any update — including attribute-only changes and repeated same-value reports — resets it. Turn on for devices that report often but rarely change value. |
 
 ![Step 3: Monitoring Settings](assets/02_monitoring_settings.png)
@@ -259,7 +275,7 @@ For example, a group named "Security Devices" produces the slug `security_device
 | `sensor..._recently_offline` | Sensor | Comma-separated friendly names of entities that went offline within the recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
 | `sensor..._recently_recovered` | Sensor | Comma-separated friendly names of entities that recovered from offline within the recovery window (`"None"` when empty) | `entities` (list of entity IDs — one representative per device when device-collapse is active), `count`, `window_minutes` |
 | `sensor..._low_battery` | Sensor | Comma-separated list of low battery entities (`"None"` when all OK) | Per-entity battery levels, count |
-| `sensor..._low_battery_count` | Sensor | Number of entities with low battery | — |
+| `sensor..._low_battery_count` | Sensor | Number of entities with low battery | `devices` *(fork)*: the entities making up the count, recorded so a chart can name them |
 | `sensor..._group_summary` | Sensor | Total entity count in the group | total_entities, online, offline, suppressed, battery_powered, low_battery |
 | `sensor..._availability_today` | Sensor | Group availability % for today | Per-entity availability breakdown |
 | `sensor..._availability_3d` | Sensor | Group availability % over 3 days | Per-entity availability breakdown |
@@ -273,7 +289,7 @@ For example, a group named "Security Devices" produces the slug `security_device
 | `binary_sensor..._any_offline_non_essential` | Binary Sensor (Problem) | ON when at least one non-essential entity is offline and not suppressed | `offline_entities` (list), `offline_count` |
 | `binary_sensor..._any_poor_signal` | Binary Sensor (Problem) | ON when at least one essential entity has poor signal (requires signal monitoring enabled) | `poor_signal_entities`, `poor_signal_count` |
 | `sensor..._poor_signal` | Sensor | Comma-separated list of essential entities with poor signal (`"None"` when all OK) — requires signal monitoring enabled | Per-entity signal_level and signal_quality, count |
-| `sensor..._poor_signal_count` | Sensor | Count of essential entities with poor signal | — |
+| `sensor..._poor_signal_count` | Sensor | Count of essential entities with poor signal | `devices` *(fork)*: the entities making up the count, recorded so a chart can name them |
 | `sensor..._affected_areas_count` | Sensor | Number of unique HA areas containing ≥1 offline, unsuppressed entity | — |
 | `sensor..._affected_areas` | Sensor | Comma-separated sorted list of affected area names (`"None"` when none) | `areas` (list), `count`, `unassigned_entities` (entity IDs with no area) |
 | `sensor..._affected_areas_recently_offline` | Sensor | Areas where ≥1 entity went offline within the recovery window (`"None"` when none) | `areas` (list), `count`, `window_minutes` |
@@ -489,6 +505,16 @@ service: entity_availability.suppress
 data:
   entity_id: switch.garden_lights
   duration: 120  # minutes (default: 60, max: 10080)
+```
+
+```yaml
+# Suppress a whole device: every entity of it, at once (fork)
+service: entity_availability.suppress
+data:
+  entity_id:
+    - light.studio_heater
+    - sensor.studio_heater_power
+  duration: 1440
 ```
 
 ```yaml

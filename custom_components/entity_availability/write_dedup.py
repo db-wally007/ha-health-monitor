@@ -37,6 +37,10 @@ class WriteDedupMixin:
     _ea_last_value: Any = _UNSET
     _ea_last_attrs: Any = _UNSET
     _ea_last_available: Any = _UNSET
+    # hm: unrecorded attributes that must still publish a change - ones the cards act on and
+    # that change rarely (an ignore's end, suppressed_until: changing only that once never
+    # reached the Health card, so a new ignore length did nothing). Not for per-tick values.
+    _ea_dedup_keep: frozenset[str] = frozenset()
 
     def _ea_current_value(self) -> Any:
         """Return the value subclasses publish (``native_value`` or ``is_on``)."""
@@ -71,6 +75,7 @@ class WriteDedupMixin:
         )
         if skip is None:
             skip = getattr(self, "_unrecorded_attributes", frozenset())
+        skip = frozenset(skip) - self._ea_dedup_keep  # hm
         if not skip:
             return attrs
         return {k: v for k, v in attrs.items() if k not in skip}

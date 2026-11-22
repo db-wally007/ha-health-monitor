@@ -407,6 +407,8 @@ class CombinedGroupSensor(CombinedSensorBase):
     """Sensor showing total entity count across multiple groups."""
 
     _attr_icon = "mdi:format-list-group"
+    # hm: an ignore's end changing on its own (another length) must reach the cards
+    _ea_dedup_keep = frozenset({"suppressed_until"})
     # No state_class: see GroupSummarySensor.
 
     # Per-entity list/dict attrs: large, no historical value. This set is now
@@ -709,7 +711,6 @@ class CombinedGroupSensor(CombinedSensorBase):
                     lambda d: (
                         d.is_low_battery
                         and not d.is_suppressed
-                        and not d.is_offline
                         and not d.is_non_essential
                     )
                 )
@@ -832,7 +833,6 @@ class CombinedGroupSensor(CombinedSensorBase):
             lambda d: (
                 d.is_low_battery
                 and not d.is_suppressed
-                and not d.is_offline
                 and not d.is_non_essential
             )
         )
@@ -1133,7 +1133,6 @@ class CombinedLowBatterySensor(CombinedSensorBase):
                 lambda d: (
                     d.is_low_battery
                     and not d.is_suppressed
-                    and not d.is_offline
                     and not d.is_non_essential
                 ),
             )
@@ -1151,7 +1150,6 @@ class CombinedLowBatterySensor(CombinedSensorBase):
                 lambda d: (
                     d.is_low_battery
                     and not d.is_suppressed
-                    and not d.is_offline
                     and not d.is_non_essential
                 ),
             )
@@ -1183,7 +1181,6 @@ class CombinedLowBatteryCountSensor(CombinedSensorBase):
                 lambda d: (
                     d.is_low_battery
                     and not d.is_suppressed
-                    and not d.is_offline
                     and not d.is_non_essential
                 ),
             )

@@ -2,7 +2,121 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.5.3+hm.4] - 2026-11-22
+
+On upstream 0.5.3, with health-monitor-card 3.23.0.
+
+### Added
+- **Failure history:** every span an automation or script spent failing - from the first
+  failed run seen to the run that ended it, with the error and the trace of its most recent
+  failed run - is logged for 10 days (from when the log was added; nothing before) and served
+  over the websocket (`entity_availability/failures`). The card lays a red *Failing* band over
+  the job's history and lists *Failing* and *Recovered* in its timeline.
+- **health-monitor-card:** `layout: phone`, a page for the iPhone (see the card's README).
+- **Ignore log:** every ignore set or stopped (the suppress actions) is logged for 10 days
+  with its entities, its end and who did it, and served over the websocket
+  (`entity_availability/ignores`); admins can drop entities from it
+  (`entity_availability/ignores/forget`).
+- **health-monitor-card:** *Ignore*. An expanded row starts with **More Info** (the
+  device's page) and **Ignore** (1 day, 1 week, until stopped) - every entity of the row
+  suppressed at once. *Ignored* is a status (dark grey) in every tab and the Status menu;
+  the timeline shows each ignore set or stopped, by whom, and when one ran out.
+- **health-monitor-card:** the address is the view (Grafana-style): `hm_tab`, `hm_status`,
+  `hm_quality`, `hm_integration`, `hm_area`, `hm_q`, `hm_range`, `hm_rows`, `hm_open` are read
+  when a link lands and written back as the view changes, so an alert can link to Health
+  already filtered.
+- **health-monitor-card:** `hm_alert`: a link with an alert's rows (`hm_rows`) shows them
+  under a chip with the alert's name in its priority's colour and how many of the rows the
+  other filters show are its own (*2 of 6 unavailable*), so the table is never taken for
+  every unavailable device. `hm_rows` takes any entity of a row.
+- **health-monitor-card:** an *Ignored* tile, there while anything is ignored: tapping it
+  lists every ignored device and helper together, with no tab chosen (its chip or Reset go
+  back to Monitored Devices); *Nothing Ignored* once the last one is let go.
+- `low_battery_count` and `poor_signal_count` carry a recorded `devices` attribute: the
+  entities making up the count, so history can say WHICH devices, not just how many.
+- **health-monitor-card:** the problem chart names its devices. Slots are clock-aligned
+  and touch-sized; hovering or dragging across the chart shows a tooltip with the slot
+  (no seconds, the user's 12/24-hour setting) and the devices per problem; tapping a bar
+  filters the table to exactly those devices.
+- **health-monitor-card:** a row without a device from an integration that is not a helper
+  or system integration (by its manifest's `integration_type`) is labelled by its entity type —
+  Google and OpenSprinkler calendars both read `_calendar`.
+- **Restart log:** the integration notes every Home Assistant restart (stopping, booted,
+  running again) for 10 days, filling in older ones from the recorder's runs, and serves
+  them with each group's cooldown over the websocket (`entity_availability/restarts`).
+- **health-monitor-card:** availability as the integration judges it - *Unavailable*
+  (red, at least the cooldown), *Brief drop-out* (amber, shorter), *Restarting* (grey,
+  caused by a restart) - with each restart once in the timeline. Battery and Signal
+  charts have a time axis.
+- **health-monitor-card:** every chart carries the same time marks - the availability
+  band's own (state-history-card's), with its name column fixed at 240 px so every
+  device's band has the same track - for the problem chart, battery and signal alike.
+  The timeline shows 10 entries a page.
+- **health-monitor-card:** the line under a row's name says *N Entities Monitored* (only
+  the entities watched for availability), and in Battery / Signal names the sensor the
+  reading comes from. In those tabs Area is narrower and the reading and its status get
+  the room it gave up.
+- **health-monitor-card:** a *Status* filter menu (the tab's statuses; *Signal quality* too
+  on the Signal tab), so the filter a tile sets is shown, not hidden. Filter buttons name
+  what is picked as chips, as many as fit and then *+N* (as Grafana does), instead of
+  "3 selected".
+
+### Changed
+- **Low battery survives going offline.** A device that goes offline stays in
+  `low_battery_entities`, `low_battery_count` and the low-battery list sensors: a dying
+  battery is what takes most battery devices offline, and its low-battery alert must not
+  resolve because of it. The level is still Home Assistant's own, with no retention - a
+  battery sensor that is unavailable has no level, so the device is not low.
+- **Not updating is judged per device.** A device is Not updating only once none of its
+  entities - diagnostic signal and beacon sensors included - has changed for the staleness
+  threshold, and only if it reports on its own (a signal sensor, or a measuring sensor other
+  than its battery); entities without a device are never Not updating. Judged per entity, any
+  one quiet entity (a closed window, a light that is off) marked its device: 42 of 73 devices
+  on a 24 h threshold, against 1 (a dead camera) now. The group summary publishes
+  `stale_since`: when each Not updating entity's device was last heard.
+- **health-monitor-card:** the status reads *Not Updating (24h)* - the window is the group's
+  staleness threshold. Its value in filters and addresses stays `not_updating`.
+- **health-monitor-card:** Battery and Signal charts leave a gap where the sensor had no
+  reading, instead of carrying the last one across it.
+- `suppress`, `suppress_indefinitely` and `unsuppress` take a list of entities (one
+  refresh per group for all of them).
+- **health-monitor-card:** the (i) settings button in an expanded row's heading is gone;
+  **More Info** at the top of the row replaces it.
+- **health-monitor-card:** in step with the Alerts card. One date-time format everywhere
+  (*Today, 9:21 PM*, *Sun, Oct 4, 9:21 PM*) - tooltip, axis, timeline, last run. The
+  ranges are 24h / 3d / 7d (6h dropped), and an open row's history is headed with the
+  range it shows instead of the device name and entity count. *Logbook* is now
+  *Timeline*. A filter dropdown with nothing picked is greyed so a set one stands out;
+  no colour marks a control (no blue: the selection is white and one weight up). The
+  device settings *(i)* moved from the row to the right end of the open row's first
+  heading. The Weak Signal tile filters by the *Weak signal* status (was quality *Poor*).
+  Filter menu counts are the open tab's.
+- **health-monitor-card:** the tab on show, and every filter with something picked, is white
+  with dark text (in step with the Alerts card), so what is selected stands out at a glance.
+
+### Fixed
+- **health-monitor-card:** a pinned chip no longer pushes Reset onto a line of its own (the
+  search box's input set its minimum width); a long chip is cut short instead.
+- **health-monitor-card:** on a page switcher's page that is sliding away, the card no longer
+  writes its filters into the address the other page now owns.
+- The group (and combined) summary publishes a change to `suppressed_until` on its own: its
+  write-dedup skipped every unrecorded attribute, so giving an ignored device another length
+  (a week, until stopped) reached Home Assistant but never the cards.
+- **health-monitor-card:** the tiles count only what is not ignored ("73 Devices Online" with
+  the dead camera ignored was untrue); ignored items have their own tile.
+- **health-monitor-card:** opening a row while another was still closing could leave it on
+  *Loading history…* for good, and closing panels could stay behind. A history that does
+  not load now offers *Try again*.
+- **health-monitor-card:** an expanded device's *Availability* showed every state change -
+  a light's on/off split its band and filled the logbook. It now shows availability only:
+  each entity Available or Unavailable (`unavailable`/`unknown`, the integration's rule),
+  and a *Timeline* of availability changes alone. Labels open more-info instead of
+  toggling the device.
+- **Saving the history file.** Two saves at once - the final one when an options change
+  reloads the entry, and a periodic one still running - wrote the same temporary file, and
+  whichever renamed it second failed with `FileNotFoundError`, which Home Assistant reported
+  as an unhandled task exception. Saves now take turns, and a save that fails on shutdown is
+  logged as a warning, as a periodic one is.
 
 ## [0.5.3+hm.3] - 2026-10-03
 

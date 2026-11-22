@@ -15,6 +15,9 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import CONF_ENTRY_TYPE, DOMAIN, ENTRY_TYPE_COMBINED, ENTRY_TYPE_GROUP
 from .coordinator import EntityAvailabilityCoordinator
+from .restarts import async_setup_restart_log
+from .ignores import async_setup_ignore_log
+from .failures import async_setup_failure_log
 from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +60,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Entity Availability from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+    # hm: Home Assistant's restarts, noted once for the card's availability history
+    await async_setup_restart_log(hass)
+    # hm: who ignored a device (suppressed its entities) and when, for the card's timeline
+    await async_setup_ignore_log(hass)
+    # hm: when automations and scripts were failing, for the card's history
+    await async_setup_failure_log(hass)
 
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_COMBINED:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
